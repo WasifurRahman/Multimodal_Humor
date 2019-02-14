@@ -229,7 +229,7 @@ class MFN(nn.Module):
 		
 	def forward(self,x):
 		x_l = x[:,:,:self.d_l]
-		x_a = x[:,:,self.d_l:self.d_l+self.d_a].unsqueeze(0).
+		x_a = x[:,:,self.d_l:self.d_l+self.d_a].unsqueeze(0)
 		x_v = x[:,:,self.d_l+self.d_a:]
 		# x is t x n x d
 		n = x.shape[1]
