@@ -150,74 +150,155 @@ class Unimodal_Context(nn.Module):
         super(Unimodal_Context, self).__init__()
 
         relevant_config = _config["unimodal_context"]
+        #print("Unimodal configs:",relevant_config)
         #TODO: Must change it id text is sent as embedding. ANother way is to make the change in config file directly
-        
+        [self.h_text,self.h_audio,self.h_video] = relevant_config["hidden_sizes"]
         self.text_LSTM = nn.LSTM(input_size = relevant_config["text_lstm_input"],
-                    hidden_size = relevant_config["hidden_size"],
+                    hidden_size = self.h_text,
                     batch_first=True)
         self.audio_LSTM = nn.LSTM(input_size = relevant_config["audio_lstm_input"],
-                    hidden_size = relevant_config["hidden_size"],
+                    hidden_size = self.h_audio,
                     batch_first=True)
         self.video_LSTM  = nn.LSTM(input_size = relevant_config["video_lstm_input"],
-                    hidden_size = relevant_config["hidden_size"],
+                    hidden_size = self.h_video,
                     batch_first=True)
         self.device = _config["device"]
-        self.hidden_size = relevant_config["hidden_size"]
+        #self.hidden_size = relevant_config["hidden_size"]
         self.input_dims = _config["input_dims"]
         
     def forward(self,X_context):
-        batch_size,context_size,seq_len,num_feats = X_context.size()
-
-        X_context = torch.reshape(X_context,(batch_size*context_size,seq_len,num_feats)).to(self.device)
+        old_batch_size,context_size,seq_len,num_feats = X_context.size()
         
-        new_batch_size = batch_size*context_size
+        # #As LSTM accepts only (batch,seq_len,feats), we are reshaping the tensor.However,
+        # #it should not have any problem. There may be some issues during backprop, but lets see what happens
+        
+        X_context = torch.reshape(X_context,(old_batch_size*context_size,seq_len,num_feats)).to(self.device)
+        
+        new_batch_size = old_batch_size*context_size
 
-        print("\nX_context:",X_context.size())
+        #print("\nX_context:",X_context.size())
         
         text_context = X_context[:,:,:self.input_dims[0]]
         audio_context = X_context[:,:,self.input_dims[0]:self.input_dims[0]+self.input_dims[1]]
         video_context = X_context[:,:,self.input_dims[0]+self.input_dims[1]:]
         
-        print("t:",text_context.shape,"a:",audio_context.shape,"v:",video_context.shape)
+        print("Context shapes:\n","t:",text_context.shape,"a:",audio_context.shape,"v:",video_context.shape)
 
         
-        #As LSTM accepts only (batch,seq_len,feats), we are reshaping the tensor.However,
-        #it should not have any problem. There may be some issues during backprop, but lets see what happens
-        
+       
         #The text lstm
-        ht_l = torch.zeros(new_batch_size, self.hidden_size).unsqueeze(0).to(self.device)
-        ct_l = torch.zeros(new_batch_size, self.hidden_size).unsqueeze(0).to(self.device)
+        ht_l = torch.zeros(new_batch_size, self.h_text).unsqueeze(0).to(self.device)
+        ct_l = torch.zeros(new_batch_size, self.h_text).unsqueeze(0).to(self.device)
         _,(ht_last,ct_last) = self.text_LSTM(text_context,(ht_l,ct_l))
-        print(ht_last.shape)
+        #print("ht_last:",ht_last.shape)
         
         
-        ha_l = torch.zeros(new_batch_size, self.hidden_size).unsqueeze(0).to(self.device)
-        ca_l = torch.zeros(new_batch_size, self.hidden_size).unsqueeze(0).to(self.device)
+        ha_l = torch.zeros(new_batch_size, self.h_audio).unsqueeze(0).to(self.device)
+        ca_l = torch.zeros(new_batch_size, self.h_audio).unsqueeze(0).to(self.device)
         _,(ha_last,ca_last) = self.audio_LSTM(audio_context,(ha_l,ca_l))
-        print(ha_last.shape)
+        #print("ha_last:",ha_last.shape)
         
-        hv_l = torch.zeros(new_batch_size, self.hidden_size).unsqueeze(0).to(self.device)
-        cv_l = torch.zeros(new_batch_size, self.hidden_size).unsqueeze(0).to(self.device)
-        _,(hv_last,cv_last) = self.audio_LSTM(audio_context,(hv_l,cv_l))
-        print(hv_last.shape)
+        hv_l = torch.zeros(new_batch_size, self.h_video).unsqueeze(0).to(self.device)
+        cv_l = torch.zeros(new_batch_size, self.h_video).unsqueeze(0).to(self.device)
+        _,(hv_last,cv_last) = self.video_LSTM(video_context,(hv_l,cv_l))
+        #print("ha last:",hv_last.shape)
         
-        text_lstm_result = torch.reshape(ht_last,(batch_size,context_size,-1))
-        audio_lstm_result = torch.reshape(ha_last,(batch_size,context_size,-1))
-        video_lstm_result = torch.reshape(hv_last,(batch_size,context_size,-1))
-        print("final reslt from unimodal:",text_lstm_result.shape,audio_lstm_result.shape,video_lstm_result.shape)
+        text_lstm_result = torch.reshape(ht_last,(old_batch_size,context_size,-1))
+        audio_lstm_result = torch.reshape(ha_last,(old_batch_size,context_size,-1))
+        video_lstm_result = torch.reshape(hv_last,(old_batch_size,context_size,-1))
+        #print("final result from unimodal:",text_lstm_result.shape,audio_lstm_result.shape,video_lstm_result.shape)
 
         
         return text_lstm_result,audio_lstm_result,video_lstm_result
         
+
+
+class Multimodal_Context(nn.Module):
+    def __init__(self,_config):
+        super(Multimodal_Context, self).__init__()
+        
+        (in_text,in_audio,in_video) =  [ _config["num_context_sequence"]*e for e in _config["unimodal_context"]["hidden_sizes"]]
+        
+        #mfn config contains a list of configs and the first one of them is the config, which
+        #contains a dictionary called h_dims which has the [ht,ha,hv].
+        (out_text,out_audio,out_video) = _config["mfn_configs"][0]["h_dims"]
+        
+        #The first one is hl
+        self.fc_uni_text_to_mfn_text_input = nn.Linear(in_text,out_text)
+        
+        #The second one is ha
+        self.fc_uni_audio_to_mfn_audio_input = nn.Linear(in_audio,out_audio)
+        
+        #The third one is hv
+        self.fc_uni_video_to_mfn_video_input = nn.Linear(in_video,out_video)
+
+    
+    def forward(self,text_uni,audio_uni,video_uni):
+        #So, we are getting three tensor corresponding to three modalities, each of shape:torch.Size([10, 5, 64])
+        
+        #We will initialize the text lstm of mfn solely from the result of text_uni.
+        
+        #Text_uni has shape [10,5,64], we will convert need to convert it to [batch_size,hidden_size].\
+        #So, first, we can just convert it to [10,5*64] here 10 is the batch size.
+        #The same is done with audio and video uni
+        reshaped_text_uni = text_uni.reshape((text_uni.shape[0],-1))
+        print("reshaped text:",reshaped_text_uni.shape)
+        reshaped_audio_uni = audio_uni.reshape((audio_uni.shape[0],-1))
+        print("reshaped audio:",reshaped_audio_uni.shape)
+        reshaped_video_uni = video_uni.reshape((video_uni.shape[0],-1))
+        print("reshaped video:",reshaped_video_uni.shape)
+        
+        #Then, we will have three linear trans. So, all three reshaped tensors begin with 
+        #shape (batch_size,config.num_context_sequence*config.unimodal_context.hidden_size) 
+        #And we need to convert them to (batch_size,mfn_configs.config.[hl or ht or hv])
+        #ht means hidden text
+        #TODO: May use a dropout layer later
+        mfn_ht_input = self.fc_uni_text_to_mfn_text_input(reshaped_text_uni)
+        #ha means hidden audio
+        mfn_ha_input = self.fc_uni_audio_to_mfn_audio_input(reshaped_audio_uni)
+        #hv means hidden video
+        mfn_hv_input = self.fc_uni_video_to_mfn_video_input(reshaped_video_uni)
+        #These three will be used to initialize the three unimodal lstms of mfn
+        print("mfn text lstm hidden init:",mfn_ht_input.shape)
+        print("mfn audio lstm hidden init:",mfn_ha_input.shape)
+        print("mfn video lstm hidden init:",mfn_hv_input.shape)
+        
+        
+        #Now, we will do self attention to convert all three original text_uni,audio_uni and video_uni 
+        #to feed into transformer. They are of shape (10,5,64), (10,5,8) and (10,5,16). SO, we need to first concat them 
+        #to convert them to shape (20,5,64+8+16=88). So, we will concat them by axis=2
+        all_three_orig_concat = torch.cat([text_uni,audio_uni,video_uni],dim=2)
+        print("all mods concatenated:",all_three_orig_concat.size())
+        
+        #Now we will feed it the transformer encoder as self_attention module
+        
+        
+        
+
         
 
 class Contextual_MFN(nn.Module):
     def __init__(self,_config):
         super(Contextual_MFN, self).__init__()
-
+        
+        #print("config in mfn)
+        print("the config in mfn_configs:",_config["mfn_configs"][0])
         self.unimodal_context = Unimodal_Context(_config)
+        self.multimodal_context = Multimodal_Context(_config)
+        
+        
+        
     def forward(self,X_Punchline,X_Context,Y):
         text_uni,audio_uni,video_uni = self.unimodal_context.forward(X_Context)
+        print("unimodal complete:",text_uni.shape, audio_uni.shape, video_uni.shape)
+
+        #mfn_ht_input,mfn_ha_input,mfn_hv_input,all_three_orig_concat = 
+        self.multimodal_context.forward(text_uni,audio_uni,video_uni)
+        
+        
+       
+        
+
         
         
         
