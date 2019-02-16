@@ -31,6 +31,9 @@ from sklearn.metrics import confusion_matrix
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.metrics import accuracy_score, f1_score
 
+from transformer.Models import Transformer
+from transformer.Optim import ScheduledOptim
+
 
 class MFN(nn.Module):
     def __init__(self,config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig):
@@ -216,7 +219,8 @@ class Unimodal_Context(nn.Module):
 class Multimodal_Context(nn.Module):
     def __init__(self,_config):
         super(Multimodal_Context, self).__init__()
-        
+        print("Config in multimodal context:",_config["multimodal_context_configs"])
+        self.config = _config
         (in_text,in_audio,in_video) =  [ _config["num_context_sequence"]*e for e in _config["unimodal_context"]["hidden_sizes"]]
         
         #mfn config contains a list of configs and the first one of them is the config, which
@@ -231,9 +235,28 @@ class Multimodal_Context(nn.Module):
         
         #The third one is hv
         self.fc_uni_video_to_mfn_video_input = nn.Linear(in_video,out_video)
+        
+        #This one will output the initialization of the mfn meory
+        encoder_config =self.config["multimodal_context_configs"]
+        self.self_attention_module = Transformer(
+        
+        n_src_features = encoder_config["n_source_features"],
+        len_max_seq = encoder_config["max_token_seq_len"],
+        _config = self.config,
+        tgt_emb_prj_weight_sharing=encoder_config["proj_share_weight"],
+        emb_src_tgt_weight_sharing=encoder_config["embs_share_weight"],
+        d_k=encoder_config["d_k"],
+        d_v=encoder_config["d_v"],
+        d_model=encoder_config["d_model"],
+        d_word_vec=encoder_config["d_word_vec"],
+        d_inner=encoder_config["d_inner_hid"],
+        n_layers=encoder_config["n_layers"],
+        n_head=encoder_config["n_head"],
+        dropout=encoder_config["dropout"]
+        ).to(self.config["device"])
 
     
-    def forward(self,text_uni,audio_uni,video_uni):
+    def forward(self,text_uni,audio_uni,video_uni,X_pos_Context,Y):
         #So, we are getting three tensor corresponding to three modalities, each of shape:torch.Size([10, 5, 64])
         
         #We will initialize the text lstm of mfn solely from the result of text_uni.
@@ -242,26 +265,26 @@ class Multimodal_Context(nn.Module):
         #So, first, we can just convert it to [10,5*64] here 10 is the batch size.
         #The same is done with audio and video uni
         reshaped_text_uni = text_uni.reshape((text_uni.shape[0],-1))
-        print("reshaped text:",reshaped_text_uni.shape)
+        #print("reshaped text:",reshaped_text_uni.shape)
         reshaped_audio_uni = audio_uni.reshape((audio_uni.shape[0],-1))
-        print("reshaped audio:",reshaped_audio_uni.shape)
+        #print("reshaped audio:",reshaped_audio_uni.shape)
         reshaped_video_uni = video_uni.reshape((video_uni.shape[0],-1))
-        print("reshaped video:",reshaped_video_uni.shape)
+        #print("reshaped video:",reshaped_video_uni.shape)
         
         #Then, we will have three linear trans. So, all three reshaped tensors begin with 
         #shape (batch_size,config.num_context_sequence*config.unimodal_context.hidden_size) 
         #And we need to convert them to (batch_size,mfn_configs.config.[hl or ht or hv])
         #ht means hidden text
         #TODO: May use a dropout layer later
-        mfn_ht_input = self.fc_uni_text_to_mfn_text_input(reshaped_text_uni)
+        mfn_hl_input = self.fc_uni_text_to_mfn_text_input(reshaped_text_uni)
         #ha means hidden audio
         mfn_ha_input = self.fc_uni_audio_to_mfn_audio_input(reshaped_audio_uni)
         #hv means hidden video
         mfn_hv_input = self.fc_uni_video_to_mfn_video_input(reshaped_video_uni)
         #These three will be used to initialize the three unimodal lstms of mfn
-        print("mfn text lstm hidden init:",mfn_ht_input.shape)
-        print("mfn audio lstm hidden init:",mfn_ha_input.shape)
-        print("mfn video lstm hidden init:",mfn_hv_input.shape)
+        #print("mfn text lstm hidden init:",mfn_ht_input.shape)
+        #print("mfn audio lstm hidden init:",mfn_ha_input.shape)
+        #print("mfn video lstm hidden init:",mfn_hv_input.shape)
         
         
         #Now, we will do self attention to convert all three original text_uni,audio_uni and video_uni 
@@ -270,7 +293,15 @@ class Multimodal_Context(nn.Module):
         all_three_orig_concat = torch.cat([text_uni,audio_uni,video_uni],dim=2)
         print("all mods concatenated:",all_three_orig_concat.size())
         
-        #Now we will feed it the transformer encoder as self_attention module
+        #Then, we are passing it through transformer
+        mfn_mem_lstm_input = self.self_attention_module(all_three_orig_concat,X_pos_Context,Y).squeeze(0)
+        
+        #print("Getting output from transformer:",mfn_mem_lstm_input.size())
+        
+        return mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_mem_lstm_input
+        
+        
+        
         
         
         
@@ -288,12 +319,15 @@ class Contextual_MFN(nn.Module):
         
         
         
-    def forward(self,X_Punchline,X_Context,Y):
+    def forward(self,X_Punchline,X_Context,X_pos_Context,Y):
         text_uni,audio_uni,video_uni = self.unimodal_context.forward(X_Context)
         print("unimodal complete:",text_uni.shape, audio_uni.shape, video_uni.shape)
 
-        #mfn_ht_input,mfn_ha_input,mfn_hv_input,all_three_orig_concat = 
-        self.multimodal_context.forward(text_uni,audio_uni,video_uni)
+        mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_mem_lstm_input = \
+          self.multimodal_context.forward(text_uni,audio_uni,video_uni,X_pos_Context,Y)
+          
+        print("Ready to init the mfn with this:","L:",mfn_hl_input.shape,"A:",mfn_ha_input.shape,\
+              "V:",mfn_hv_input.shape,"mem:",mfn_mem_lstm_input.shape)  
         
         
        

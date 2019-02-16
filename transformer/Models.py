@@ -15,7 +15,7 @@ def get_non_pad_mask(seq):
     """
     
     
-    numpy_seq_k = seq.cpu().numpy()
+    numpy_seq_k = seq.detach().cpu().numpy()
     #print(numpy_seq_k[1,:10,:])
     padding_rows_cols = np.where(~numpy_seq_k.any(axis=2))
     padding_mask = np.ones((numpy_seq_k.shape[:2]))
@@ -51,7 +51,9 @@ def get_attn_key_pad_mask(seq_k, seq_q):
 
     # Expand to fit the shape of key query attention matrix.
     len_q = seq_q.size(1)#20
-    numpy_seq_k = seq_k.cpu().numpy()
+    #calling detach will have no impact on the original seq_q,
+    numpy_seq_k = seq_k.detach().cpu().numpy()
+    #print("checking state of seq_k after detach() op",seq_k.requires_grad)
     #print(numpy_seq_k[1,:10,:])
     padding_rows_cols = np.where(~numpy_seq_k.any(axis=2))
     padding_mask = np.zeros((numpy_seq_k.shape[:2]))
@@ -132,18 +134,16 @@ class Encoder(nn.Module):
         return enc_output,
 
 
-class PostMerger(nn.Module):
+class PostEncoder(nn.Module):
     '''
     This module will merge all the modified "feature vectors" derived from the encoder
     '''
     
     def __init__(self,_config):
-        super(PostMerger,self).__init__()
+        super(PostEncoder,self).__init__()
         self.device = _config["device"]
         self.post_merger_config = _config["post_merger"]
-        self.merger_lstm = nn.LSTM(input_size = self.post_merger_config["lstm_input"],
-                    hidden_size = self.post_merger_config["lstm_hidden"],
-                    batch_first=True)
+      
         
         self.fc1 = nn.Linear(in_features=self.post_merger_config["lstm_hidden"],
                              out_features=self.post_merger_config["fc1_output"])
@@ -189,13 +189,18 @@ class Transformer(nn.Module):
             d_word_vec=d_word_vec, d_model=d_model, d_inner=d_inner,
             n_layers=n_layers, n_head=n_head, d_k=d_k, d_v=d_v,
             dropout=dropout)
-        self.post_merger = PostMerger(_config)
-
+        #TODO:Needs to uncomment it
+        #self.post_merger = PostEncoder(_config)
+        in_size = d_model*_config["num_context_sequence"]
+        out_size = _config["mfn_configs"][0]["memsize"]
+        self.fc_to_mfn_mem = nn.Linear(in_size,out_size)
+        
+        self.mfn_mem_input_dropout = \
+        nn.Dropout(_config["multimodal_context_configs"]['post_encoder']['mfn_mem_input_drop'])
 
         
-        assert d_model == d_word_vec, \
-        'To facilitate the residual connections, \
-         the dimensions of all module outputs shall be the same.'
+        
+        
 
        
        
@@ -205,11 +210,13 @@ class Transformer(nn.Module):
         #tgt_seq, tgt_pos = tgt_seq[:, :-1], tgt_pos[:, :-1]
 
         enc_output, *_ = self.encoder(X,X_pos,self.device)
-        predictions = self.post_merger(enc_output)
-        #dec_output, *_ = self.decoder(tgt_seq, tgt_pos, src_seq, enc_output)
-        #enc_output = self.encoder(src_seq, src_pos)[0]
-        #We may not need the following part and replace with something of our own.
-        #dec_output = self.decoder(tgt_seq, tgt_pos, src_seq, enc_output)[0]
-        #seq_logit = self.tgt_word_prj(dec_output) * self.x_logit_scale
+        #TODO:Need to uncomment it
+        #predictions = self.post_merger(enc_output)
+        #print("output from transformer:",enc_output.shape)
+        
+        reshaped_enc_out = torch.reshape(enc_output,(enc_output.shape[0],-1))
+        mfn_mem_lstm_input = \
+              self.mfn_mem_input_dropout(self.fc_to_mfn_mem(reshaped_enc_out))
+        #print("mfn mem input shape:",mfn_mem_lstm_input.size())      
 
-        return predictions
+        return mfn_mem_lstm_input

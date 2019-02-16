@@ -49,7 +49,7 @@ ex = Experiment('multimodal_humor')
 from sacred.observers import MongoObserver
 
 #We must change url to the the bluehive node on which the mongo server is running
-url_database = 'bhc0088:27017'
+url_database = 'bhc0086:27017'
 mongo_database_name = 'prototype'
 ex.observers.append(MongoObserver.create(url= url_database ,db_name= mongo_database_name))
 
@@ -100,9 +100,13 @@ def cfg():
                         "video_lstm_input":input_dims[2],"hidden_sizes":[64,8,16]
                                                      }
     
-    multimodal_context_configs = {'d_word_vec':512,'d_model':512,'d_inner_hid':2048,'d_k':64,'d_v':64,'n_head':8,'n_layers':6,
-                   'n_warmup_steps':4000,'dropout':0.1,'embs_share_weight':True,'proj_share_weight':True,
-                   'label_smoothing': True,'max_token_seq_len':20,'n_source_features':325
+    multimodal_context_configs = {'d_word_vec':512,'d_model':512,'d_inner_hid':2048,
+                   'd_k':64,'d_v':64,'n_head':8,'n_layers':6,'n_warmup_steps':4000,
+                   'dropout':0.1,'embs_share_weight':True,'proj_share_weight':True,
+                   'label_smoothing': True,'max_token_seq_len':num_context_sequence,
+                   'n_source_features':sum(unimodal_context["hidden_sizes"]),
+                   'post_encoder':{'mfn_mem_input_drop':random.choice([0.0,0.2,0.5,0.7])}
+                   
                    }
 
         
@@ -156,16 +160,27 @@ class Generic_Dataset(Dataset):
     def __getitem__(self, idx):
         X = torch.FloatTensor(self.X[idx])
         
-        #print(self.X[idx].shape)
+        #print("The P:",X.size(),X[:,:])
         #TODO: Must change it when correct dataset arrives
         #we are just repeating each entry 
         X_context = torch.FloatTensor(np.repeat(self.X[idx],
             self.config["num_context_sequence"],0).reshape((self.config["num_context_sequence"],
                        self.config["max_seq_len"],-1))) 
-        #print(X)
+        #print("The Context:",X_context.size())
         
+        #Basically, we will think the whole sentence as a sequence.
+        #all the words will be merged. If all of them are zero, then it is a padding 
+        reshaped_context = torch.reshape(X_context,(X_context.shape[0],-1))
+        #print("The reshaped context:",reshaped_context.size())
+        padding_rows = np.where(~reshaped_context.cpu().numpy().any(axis=1))[0]
+        n_rem_entries= reshaped_context.shape[0] - len(padding_rows)
+        X_pos_context = np.concatenate(( np.zeros((len(padding_rows),)), np.array([pos+1 for pos in range(n_rem_entries)])))
+        #print("X_pos:",X_pos," Len:",X_pos.shape)
+        X_pos_context = torch.LongTensor(X_pos_context)   
+        #print("X_pos_context:",X_pos_context.shape,X_pos_context)
+
         Y = torch.FloatTensor([self.Y[idx]])
-        return X,X_context,Y
+        return X,X_context,X_pos_context,Y
 
 
 
@@ -290,11 +305,11 @@ def train_epoch(model, training_data, criterion,optimizer, device, smoothing):
 
      #TODO: For simplicity, we are not using X_pos right now as we really do not know
      #how it can be used properly. So, we will just use the context information only.
-        X_Punchline,X_Context,Y = map(lambda x: x.to(device), batch)
+        X_Punchline,X_Context,X_pos_Context,Y = map(lambda x: x.to(device), batch)
         
         print("\nData_size:\nX_P:", X_Punchline.shape,", X_C:",X_Context.shape," Y:",Y.shape)
         #TODO: Doing it to avoid error. Must remove it afterwards.
-        predictions = model(X_Punchline,X_Context,Y)
+        predictions = model(X_Punchline,X_Context,X_pos_Context,Y)
         # forward
 # =============================================================================
 #         optimizer.zero_grad()
