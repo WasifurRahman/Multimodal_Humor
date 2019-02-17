@@ -39,6 +39,8 @@ class MFN(nn.Module):
     def __init__(self,_config):
         
         super(MFN, self).__init__()
+        self.config=_config
+        self.device = _config["device"]
         config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig = \
             _config["mfn_configs"]
         [self.d_l,self.d_a,self.d_v] = config["input_dims"]
@@ -86,22 +88,47 @@ class MFN(nn.Module):
         self.out_dropout = nn.Dropout(out_dropout)
         
         
+        
+        
     
-    def forward(self,x,h_l_prior,h_a_prior,h_v_prior,mem_prior):
+    def forward(self,x,c_l_prior,c_a_prior,c_v_prior,c_mem_prior):
         
         x_l = x[:,:,:self.d_l]
-        x_a = x[:,:,self.d_l:self.d_l+self.d_a].unsqueeze(0)
+        x_a = x[:,:,self.d_l:self.d_l+self.d_a]
         x_v = x[:,:,self.d_l+self.d_a:]
+        
+        #If we do not need to use audio, we can zero it out
+        if(self.config["use_audio"]==False):
+            x_l = torch.zeros_like(x_l,requires_grad=True)
+            #print("The zeroed audio:",x_l)
+        
+         #If we do not need to use audio, we can zero it out
+        if(self.config["use_video"]==False):
+            x_v = torch.zeros_like(x_v,requires_grad=True)
+            #print("The zeroed video:",x_v)
+        
+        
+
+        
+        
         # x is t x n x d
         n = x.shape[1]
         t = x.shape[0]
-        self.h_l = torch.zeros(n, self.dh_l).cuda()
-        self.h_a = torch.zeros(n, self.dh_a).cuda()
-        self.h_v = torch.zeros(n, self.dh_v).cuda()
-        self.c_l = torch.zeros(n, self.dh_l).cuda()
-        self.c_a = torch.zeros(n, self.dh_a).cuda()
-        self.c_v = torch.zeros(n, self.dh_v).cuda()
-        self.mem = torch.zeros(n, self.mem_dim).cuda()
+        self.h_l = torch.zeros(n, self.dh_l).to(self.device)
+        self.h_a = torch.zeros(n, self.dh_a).to(self.device)
+        self.h_v = torch.zeros(n, self.dh_v).to(self.device)
+        #My best guess is that we need to initialize c with the prior, not h. BUt I can be wrong.
+        #Talk to Amir about it
+# =============================================================================
+#         self.c_l = torch.zeros(n, self.dh_l).to(self.device)
+#         self.c_a = torch.zeros(n, self.dh_a).to(self.device)
+#         self.c_v = torch.zeros(n, self.dh_v).to(self.device)
+#         self.mem = torch.zeros(n, self.mem_dim).to(self.device)
+# =============================================================================
+        self.c_l = c_l_prior.to(self.device)
+        self.c_a = c_a_prior.to(self.device)
+        self.c_v = c_v_prior.to(self.device)
+        self.mem = c_mem_prior.to(self.device)
         all_h_ls = []
         all_h_as = []
         all_h_vs = []
@@ -122,12 +149,12 @@ class MFN(nn.Module):
             prev_cs = torch.cat([prev_c_l,prev_c_a,prev_c_v], dim=1)
             new_cs = torch.cat([new_c_l,new_c_a,new_c_v], dim=1)
             cStar = torch.cat([prev_cs,new_cs], dim=1)
-            attention = F.softmax(self.att1_fc2(self.att1_dropout(F.relu(self.att1_fc1(cStar)))),dim=1)
+            attention = torch.softmax(self.att1_fc2(self.att1_dropout(F.relu(self.att1_fc1(cStar)))),dim=1)
             attended = attention*cStar
-            cHat = F.tanh(self.att2_fc2(self.att2_dropout(F.relu(self.att2_fc1(attended)))))
+            cHat = torch.tanh(self.att2_fc2(self.att2_dropout(F.relu(self.att2_fc1(attended)))))
             both = torch.cat([attended,self.mem], dim=1)
-            gamma1 = F.sigmoid(self.gamma1_fc2(self.gamma1_dropout(F.relu(self.gamma1_fc1(both)))))
-            gamma2 = F.sigmoid(self.gamma2_fc2(self.gamma2_dropout(F.relu(self.gamma2_fc1(both)))))
+            gamma1 = torch.sigmoid(self.gamma1_fc2(self.gamma1_dropout(F.relu(self.gamma1_fc1(both)))))
+            gamma2 = torch.sigmoid(self.gamma2_fc2(self.gamma2_dropout(F.relu(self.gamma2_fc1(both)))))
             self.mem = gamma1*self.mem + gamma2*cHat
             all_mems.append(self.mem)
             # update
@@ -148,6 +175,9 @@ class MFN(nn.Module):
         last_mem = all_mems[-1]
         last_hs = torch.cat([last_h_l,last_h_a,last_h_v,last_mem], dim=1)
         output = self.out_fc2(self.out_dropout(F.relu(self.out_fc1(last_hs))))
+        
+        #This new line runs the sigmoid and gives 0/1 output. Our losee function takes care of that
+        #prediction = torch.sigmoid(output)>=0.5
         return output
         
  
@@ -316,6 +346,7 @@ class Contextual_MFN(nn.Module):
         super(Contextual_MFN, self).__init__()
         
         #print("config in mfn)
+        self.config=_config
         print("the config in mfn_configs:",_config["mfn_configs"][0])
         self.unimodal_context = Unimodal_Context(_config)
         self.multimodal_context = Multimodal_Context(_config)
@@ -324,14 +355,29 @@ class Contextual_MFN(nn.Module):
         
         
     def forward(self,X_Punchline,X_Context,X_pos_Context,Y):
+        
+        #if we don't want context, we will make context all zero here
+        if(self.config["use_context"]==False):
+                X_Context = torch.zeros_like(X_Context,requires_grad=True)
+        
+        #Our X_punchline is in format batch_size*time*features.MFN expects it in time*batch_size*features
+        #since it performs operation per time index across all batched. So, we will swap axes here.
+        X_Punchline = X_Punchline.permute(1,0,2)
+        
+        
         text_uni,audio_uni,video_uni = self.unimodal_context.forward(X_Context)
         print("unimodal complete:",text_uni.shape, audio_uni.shape, video_uni.shape)
 
-        mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_mem_lstm_input = \
+        mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_h_mem_input = \
           self.multimodal_context.forward(text_uni,audio_uni,video_uni,X_pos_Context,Y)
           
         print("Ready to init the mfn with this:","L:",mfn_hl_input.shape,"A:",mfn_ha_input.shape,\
-              "V:",mfn_hv_input.shape,"mem:",mfn_mem_lstm_input.shape)  
+              "V:",mfn_hv_input.shape,"mem:",mfn_h_mem_input.shape) 
+        
+        prediction = self.mfn.forward(X_Punchline,mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_h_mem_input)
+        print("result from mfn:",prediction)
+        return prediction
+        #h_l_prior,h_a_prior,h_v_prior,mem_prior
         
         
        

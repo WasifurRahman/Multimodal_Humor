@@ -59,7 +59,7 @@ def cfg():
     epoch = 75 #paul did 50
     shuffle = True
     num_workers = 2
-    best_model_path =  "/scratch/echowdh2/saved_models_from_projects/multimodal_transformer/"+str(node_index) +"_best_model.chkpt"
+    best_model_path =  "/scratch/echowdh2/saved_models_from_projects/multimodal_humor/"+str(node_index) +"_best_model.chkpt"
     num_context_sequence=5
     
     dataset_location = None
@@ -84,6 +84,11 @@ def cfg():
     
    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    use_context=True
+    #use_text=True
+    use_audio=False
+    use_video=False
     
     
     save_model = "best_model"
@@ -180,6 +185,10 @@ class Generic_Dataset(Dataset):
         #print("X_pos_context:",X_pos_context.shape,X_pos_context)
 
         Y = torch.FloatTensor([self.Y[idx]])
+        #TODO:MUST ERASE in new dataset, doing to run sigmoid
+        Y = Y>0
+        #print("The new Y:",Y)
+        
         return X,X_context,X_pos_context,Y
 
 
@@ -293,7 +302,7 @@ def train_mfn(train_data_loader,valid_data_loader,test_data_loader,_config):
     
 
 @ex.capture
-def train_epoch(model, training_data, criterion,optimizer, device, smoothing):
+def train_epoch(model, training_data, criterion,optimizer, device, smoothing,_config):
     ''' Epoch operation in training phase'''
 
     model.train()
@@ -307,32 +316,33 @@ def train_epoch(model, training_data, criterion,optimizer, device, smoothing):
      #how it can be used properly. So, we will just use the context information only.
         X_Punchline,X_Context,X_pos_Context,Y = map(lambda x: x.to(device), batch)
         
+        
+        
         print("\nData_size:\nX_P:", X_Punchline.shape,", X_C:",X_Context.shape," Y:",Y.shape)
         #TODO: Doing it to avoid error. Must remove it afterwards.
-        predictions = model(X_Punchline,X_Context,X_pos_Context,Y)
+        
         # forward
-# =============================================================================
-#         optimizer.zero_grad()
-#         predictions = model(train_X,train_X_Context,train_Y).squeeze(0)
-#         #print(predictions.size(),train_Y.size())
-# 
-#         loss = criterion(predictions, train_Y)
-#         loss.backward()
-#         #optimizer.step()
-#         epoch_loss += loss.item()
-# 
-#         # update parameters
-#         optimizer.step_and_update_lr()
-#         
-#         num_batches +=1
-# =============================================================================
+        optimizer.zero_grad()
+        predictions = model(X_Punchline,X_Context,X_pos_Context,Y).squeeze(0)
+        #print(predictions.size(),train_Y.size())
+
+        loss = criterion(predictions,Y.float())
+        loss.backward()
+        #optimizer.step()
+        epoch_loss += loss.item()
+
+        # update parameters
+        optimizer.step_and_update_lr()
+        
+        num_batches +=1
+
     #TODO: MUST REMOVE
     if(num_batches==0):
         num_batches+=1
     return epoch_loss / num_batches
 
 @ex.capture
-def eval_epoch(model,data_loader,criterion, device):
+def eval_epoch(model,data_loader,criterion, device,_config):
     ''' Epoch operation in evaluation phase '''
     epoch_loss = 0.0
     num_batches=0
@@ -340,11 +350,14 @@ def eval_epoch(model,data_loader,criterion, device):
     with torch.no_grad():
    
         for batch in tqdm(data_loader, mininterval=2,desc='  - (Validation)   ', leave=False):
-    
+            
+            X_Punchline,X_Context,X_pos_Context,Y = map(lambda x: x.to(device), batch)
+        
+            
          
-            X,X_pos,Y = map(lambda x: x.to(device), batch)
-            predictions = model(X,X_pos,Y).squeeze(0)
-            loss = criterion(predictions, Y)
+            
+            predictions = model(X_Punchline,X_Context,X_pos_Context,Y).squeeze(0)
+            loss = criterion(predictions, Y.float())
             
             epoch_loss += loss.item()
             
@@ -355,23 +368,8 @@ def reload_model_from_file(file_path):
         checkpoint = torch.load(file_path)
         _config = checkpoint['_config']
         
-        encoder_config = _config["encoder"]
-        model = Transformer(
-        
-        n_src_features = encoder_config["n_source_features"],
-        len_max_seq = encoder_config["max_token_seq_len"],
-        _config = _config,
-        tgt_emb_prj_weight_sharing=encoder_config["proj_share_weight"],
-        emb_src_tgt_weight_sharing=encoder_config["embs_share_weight"],
-        d_k=encoder_config["d_k"],
-        d_v=encoder_config["d_v"],
-        d_model=encoder_config["d_model"],
-        d_word_vec=encoder_config["d_word_vec"],
-        d_inner=encoder_config["d_inner_hid"],
-        n_layers=encoder_config["n_layers"],
-        n_head=encoder_config["n_head"],
-        dropout=encoder_config["dropout"]
-        ).to(_config["device"])
+        #encoder_config = _config["multimodal_context_configs"]
+        model = Contextual_MFN(_config).to(_config["device"])
         
 
         
@@ -382,7 +380,7 @@ def reload_model_from_file(file_path):
         return model
         
 @ex.capture
-def test_epoch(model,data_loader,criterion, device):
+def test_epoch(model,data_loader,criterion, device,_config):
     ''' Epoch operation in evaluation phase '''
     epoch_loss = 0.0
     num_batches=0
@@ -394,9 +392,11 @@ def test_epoch(model,data_loader,criterion, device):
         for batch in tqdm(data_loader, mininterval=2,desc='  - (Validation)   ', leave=False):
     
          
-            X,X_pos,Y = map(lambda x: x.to(device), batch)
-            predictions = model(X,X_pos,Y).squeeze(0)
-            loss = criterion(predictions, Y)
+            X_Punchline,X_Context,X_pos_Context,Y = map(lambda x: x.to(device), batch)
+            
+           
+            predictions = model(X_Punchline,X_Context,X_pos_Context,Y).squeeze(0)
+            loss = criterion(predictions, Y.float())
             
             epoch_loss += loss.item()
             
@@ -405,7 +405,7 @@ def test_epoch(model,data_loader,criterion, device):
             #creates problems like nan while computing various statistics on them
             returned_Y = Y.squeeze(1).cpu().numpy()
             returned_predictions = predictions.squeeze(1).cpu().data.numpy()
-
+            
     return returned_predictions,returned_Y   
 
 
@@ -422,34 +422,34 @@ def train(model, training_data, validation_data, optimizer,criterion,_config,_ru
         train_loss = train_epoch(
             model, training_data, criterion,optimizer, device = _config["device"],
                 smoothing=_config["multimodal_context_configs"]["label_smoothing"])
-    #     #print("\nepoch:{},train_loss:{}".format(epoch_i,train_loss))
-    #     _run.log_scalar("training.loss", train_loss, epoch_i)
+        #print("\nepoch:{},train_loss:{}".format(epoch_i,train_loss))
+        _run.log_scalar("training.loss", train_loss, epoch_i)
 
 
-    #     valid_loss = eval_epoch(model, validation_data, criterion,device=_config["device"])
-    #     _run.log_scalar("dev.loss", valid_loss, epoch_i)
+        valid_loss = eval_epoch(model, validation_data, criterion,device=_config["device"])
+        _run.log_scalar("dev.loss", valid_loss, epoch_i)
         
-    #     #scheduler.step(valid_loss)
+        #scheduler.step(valid_loss)
 
         
         
-    #     valid_losses.append(valid_loss)
-    #     #print("\nepoch:{},train_loss:{}, valid_loss:{}".format(epoch_i,train_loss,valid_loss))
+        valid_losses.append(valid_loss)
+        print("\nepoch:{},train_loss:{}, valid_loss:{}".format(epoch_i,train_loss,valid_loss))
 
-    #     model_state_dict = model.state_dict()
-    #     checkpoint = {
-    #         'model': model_state_dict,
-    #         '_config': _config,
-    #         'epoch': epoch_i}
+        model_state_dict = model.state_dict()
+        checkpoint = {
+            'model': model_state_dict,
+            '_config': _config,
+            'epoch': epoch_i}
 
-    #     if _config["save_model"]:
-    #         if _config["save_mode"] == 'best':
-    #             if valid_loss <= min(valid_losses):
-    #                 torch.save(checkpoint, model_path)
-    #                 print('    - [Info] The checkpoint file has been updated.')
-    # #After the entire training is over, save the best model as artifact in the mongodb, only if it is not protptype
-    # if(_config["protptype"]==False):
-    #     ex.add_artifact(model_path)
+        if _config["save_model"]:
+            if _config["save_mode"] == 'best':
+                if valid_loss <= min(valid_losses):
+                    torch.save(checkpoint, model_path)
+                    print('    - [Info] The checkpoint file has been updated.')
+    #After the entire training is over, save the best model as artifact in the mongodb, only if it is not protptype
+    if(_config["prototype"]==False):
+        ex.add_artifact(model_path)
 
 
 @ex.capture
@@ -458,8 +458,8 @@ def test_score(test_data_loader,criterion,_config,_run):
     model = reload_model_from_file(model_path)
 
     predictions,y_test = test_epoch(model,test_data_loader,criterion,_config["device"])
-    #print("predictions:",predictions,predictions.shape)
-    #print("ytest:",y_test,y_test.shape)
+    print("predictions:",predictions,predictions.shape)
+    print("ytest:",y_test,y_test.shape)
     mae = np.mean(np.absolute(predictions-y_test))
     print("mae: ", mae)
     
@@ -472,7 +472,10 @@ def test_score(test_data_loader,criterion,_config,_run):
     f_score = round(f1_score(np.round(predictions),np.round(y_test),average='weighted'),5)
     print("mult f_score: ", f_score)
     
-    true_label = (y_test >= 0)
+    #TODO:Make sure that it is correct
+    #true_label = (y_test >= 0)
+    true_label = (y_test)
+
     predicted_label = (predictions >= 0)
     print("Confusion Matrix :")
     confusion_matrix_result = confusion_matrix(true_label, predicted_label)
@@ -514,7 +517,8 @@ def driver(_config):
         multimodal_context_config["d_model"], multimodal_context_config["n_warmup_steps"])
     
     #TODO: May have to change the criterion
-    criterion = nn.L1Loss()
+    #criterion = nn.L1Loss()
+    criterion = nn.BCEWithLogitsLoss()
     criterion = criterion.to(_config["device"])
     
     # optimizer =  optim.Adam(
@@ -526,13 +530,11 @@ def driver(_config):
 
     train(model, train_data_loader,dev_data_loader, optimizer,criterion)
     
-# =============================================================================
-#     test_accuracy = test_score(test_data_loader,criterion)
-#     ex.log_scalar("test.accuracy",test_accuracy)
-#     results = dict()
-#     #I believe that it will try to minimize the rest. Let's see how it plays out
-#     results["optimization_target"] = 1 - test_accuracy
-# 
-#     return results
-# =============================================================================
+    test_accuracy = test_score(test_data_loader,criterion)
+    ex.log_scalar("test.accuracy",test_accuracy)
+    results = dict()
+    #I believe that it will try to minimize the rest. Let's see how it plays out
+    results["optimization_target"] = 1 - test_accuracy
+
+    return results
 
