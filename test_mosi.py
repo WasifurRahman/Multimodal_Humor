@@ -151,7 +151,7 @@ parser.add_argument('-s', '--feature_selection', default=1, type=int, choices=[0
 
 args = parser.parse_args()
 config = json.load(open(args.config), object_pairs_hook=OrderedDict)
-
+mfn_configs
 class EFLSTM(nn.Module):
 	def __init__(self, d, h, output_dim, dropout): #, n_layers, bidirectional, dropout):
 		super(EFLSTM, self).__init__()

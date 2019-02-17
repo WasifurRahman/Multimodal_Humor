@@ -36,8 +36,11 @@ from transformer.Optim import ScheduledOptim
 
 
 class MFN(nn.Module):
-    def __init__(self,config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig):
+    def __init__(self,_config):
+        
         super(MFN, self).__init__()
+        config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig = \
+            _config["mfn_configs"]
         [self.d_l,self.d_a,self.d_v] = config["input_dims"]
         [self.dh_l,self.dh_a,self.dh_v] = config["h_dims"]
         total_h_dim = self.dh_l+self.dh_a+self.dh_v
@@ -84,7 +87,7 @@ class MFN(nn.Module):
         
         
     
-    def forward(self,x):
+    def forward(self,x,h_l_prior,h_a_prior,h_v_prior,mem_prior):
         
         x_l = x[:,:,:self.d_l]
         x_a = x[:,:,self.d_l:self.d_l+self.d_a].unsqueeze(0)
@@ -316,6 +319,7 @@ class Contextual_MFN(nn.Module):
         print("the config in mfn_configs:",_config["mfn_configs"][0])
         self.unimodal_context = Unimodal_Context(_config)
         self.multimodal_context = Multimodal_Context(_config)
+        self.mfn = MFN(_config)
         
         
         
