@@ -195,9 +195,7 @@ class Transformer(nn.Module):
         out_size = _config["mfn_configs"][0]["memsize"]
         self.fc_to_mfn_mem = nn.Linear(in_size,out_size)
         
-        self.mfn_mem_input_dropout = \
-        nn.Dropout(_config["multimodal_context_configs"]['post_encoder']['mfn_mem_input_drop'])
-
+        
         
         
         
@@ -215,8 +213,7 @@ class Transformer(nn.Module):
         #print("output from transformer:",enc_output.shape)
         
         reshaped_enc_out = torch.reshape(enc_output,(enc_output.shape[0],-1))
-        mfn_mem_lstm_input = \
-              self.mfn_mem_input_dropout(self.fc_to_mfn_mem(reshaped_enc_out))
+        mfn_mem_lstm_input = self.fc_to_mfn_mem(reshaped_enc_out)
         #print("mfn mem input shape:",mfn_mem_lstm_input.size())      
 
         return mfn_mem_lstm_input

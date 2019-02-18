@@ -21,11 +21,31 @@ dataset_specific_config = {
         "youtube":{'text_indices':(0,300),'audio_indices':(300,374),'video_indices':(374,409),'max_seq_len':21}
         
         }
+ # use_context=True
+ #    use_context_text=True
+ #    use_context_audio=True
+ #    use_context_video = True
+    
+ #    use_punchline_text=True
+ #    use_punchline_audio=True
+ #    use_punchline_video=True
+experiment_configs=[
+        {'use_context':True,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':True},
+        {'use_context':True,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':False},
+        {'use_context':True,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':False},
+        {'use_context':True,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':True},
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':True},
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':False},
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':False},
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':True}
+        
+        ]
+num_experiments = len(experiment_configs)
 
 #sacred will generate a different random _seed for every experiment
 #and we will use that seed to control the randomness emanating from our libraries
 #node_index=int(os.environ['SLURM_ARRAY_TASK_ID'])
-node_index=1
+node_index=0
 
 #So, we are assuming that there will a folder called /processed_multimodal_data in the parent folder
 #of this code. I wanted to keep it inside the .git folder. But git push limits file size to be <=100MB
@@ -34,7 +54,7 @@ all_datasets_location = "../processed_multimodal_data"
 def run_a_config(dataset_location):
     #print(dataset_location)
     dataset_name = dataset_location[dataset_location.rfind("/")+1:]
-    appropriate_config_dict = {**dataset_specific_config[dataset_name],"node_index":node_index,
+    appropriate_config_dict = {**dataset_specific_config[dataset_name],**experiment_configs[node_index%num_experiments],"node_index":node_index,
                               "prototype":True,'dataset_location':dataset_location,"dataset_name":dataset_name}
     #print(appropriate_config_dict)
     r= ex.run(config_updates=appropriate_config_dict)

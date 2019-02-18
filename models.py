@@ -34,6 +34,7 @@ from sklearn.metrics import accuracy_score, f1_score
 from transformer.Models import Transformer
 from transformer.Optim import ScheduledOptim
 
+my_logger=None
 
 class MFN(nn.Module):
     def __init__(self,_config):
@@ -97,15 +98,20 @@ class MFN(nn.Module):
         x_a = x[:,:,self.d_l:self.d_l+self.d_a]
         x_v = x[:,:,self.d_l+self.d_a:]
         
-        #If we do not need to use audio, we can zero it out
-        if(self.config["use_audio"]==False):
+        #If we do not need to use punchline text, we can zero it out
+        if(self.config["use_punchline_text"]==False):
             x_l = torch.zeros_like(x_l,requires_grad=True)
-            #print("The zeroed audio:",x_l)
         
-         #If we do not need to use audio, we can zero it out
-        if(self.config["use_video"]==False):
+        
+        #If we do not need to use punchline audio, we can zero it out
+        if(self.config["use_punchline_audio"]==False):
+            x_a = torch.zeros_like(x_a,requires_grad=True)
+            #my_logger.debug("The zeroed audio:",x_l)
+        
+         #If we do not need to use punchline video, we can zero it out
+        if(self.config["use_punchline_video"]==False):
             x_v = torch.zeros_like(x_v,requires_grad=True)
-            #print("The zeroed video:",x_v)
+            #my_logger.debug("The zeroed video:",x_v)
         
         
 
@@ -186,7 +192,7 @@ class Unimodal_Context(nn.Module):
         super(Unimodal_Context, self).__init__()
 
         relevant_config = _config["unimodal_context"]
-        #print("Unimodal configs:",relevant_config)
+        #my_logger.debug("Unimodal configs:",relevant_config)
         #TODO: Must change it id text is sent as embedding. ANother way is to make the change in config file directly
         [self.h_text,self.h_audio,self.h_video] = relevant_config["hidden_sizes"]
         self.text_LSTM = nn.LSTM(input_size = relevant_config["text_lstm_input"],
@@ -201,6 +207,7 @@ class Unimodal_Context(nn.Module):
         self.device = _config["device"]
         #self.hidden_size = relevant_config["hidden_size"]
         self.input_dims = _config["input_dims"]
+        self.config=_config
         
     def forward(self,X_context):
         old_batch_size,context_size,seq_len,num_feats = X_context.size()
@@ -212,13 +219,29 @@ class Unimodal_Context(nn.Module):
         
         new_batch_size = old_batch_size*context_size
 
-        #print("\nX_context:",X_context.size())
+        #my_logger.debug("\nX_context:",X_context.size())
         
         text_context = X_context[:,:,:self.input_dims[0]]
         audio_context = X_context[:,:,self.input_dims[0]:self.input_dims[0]+self.input_dims[1]]
         video_context = X_context[:,:,self.input_dims[0]+self.input_dims[1]:]
         
-        print("Context shapes:\n","t:",text_context.shape,"a:",audio_context.shape,"v:",video_context.shape)
+        #If we do not need to use context text, we can zero it out
+        if(self.config["use_context_text"]==False):
+             text_context= torch.zeros_like(text_context ,requires_grad=True)
+        
+        
+        #If we do not need to use context audio, we can zero it out
+        if(self.config["use_context_audio"]==False):
+            audio_context = torch.zeros_like(audio_context,requires_grad=True)
+            #my_logger.debug("The zeroed audio:",x_l)
+        
+        #If we do not need to use context video, we can zero it out
+        if(self.config["use_punchline_video"]==False):
+            video_context = torch.zeros_like(video_context,requires_grad=True)
+            #my_logger.debug("The zeroed video:",x_v)
+            
+        
+        my_logger.debug("Context shapes:\n","t:",text_context.shape,"a:",audio_context.shape,"v:",video_context.shape)
 
         
        
@@ -226,23 +249,23 @@ class Unimodal_Context(nn.Module):
         ht_l = torch.zeros(new_batch_size, self.h_text).unsqueeze(0).to(self.device)
         ct_l = torch.zeros(new_batch_size, self.h_text).unsqueeze(0).to(self.device)
         _,(ht_last,ct_last) = self.text_LSTM(text_context,(ht_l,ct_l))
-        #print("ht_last:",ht_last.shape)
+        #my_logger.debug("ht_last:",ht_last.shape)
         
         
         ha_l = torch.zeros(new_batch_size, self.h_audio).unsqueeze(0).to(self.device)
         ca_l = torch.zeros(new_batch_size, self.h_audio).unsqueeze(0).to(self.device)
         _,(ha_last,ca_last) = self.audio_LSTM(audio_context,(ha_l,ca_l))
-        #print("ha_last:",ha_last.shape)
+        #my_logger.debug("ha_last:",ha_last.shape)
         
         hv_l = torch.zeros(new_batch_size, self.h_video).unsqueeze(0).to(self.device)
         cv_l = torch.zeros(new_batch_size, self.h_video).unsqueeze(0).to(self.device)
         _,(hv_last,cv_last) = self.video_LSTM(video_context,(hv_l,cv_l))
-        #print("ha last:",hv_last.shape)
+        #my_logger.debug("ha last:",hv_last.shape)
         
         text_lstm_result = torch.reshape(ht_last,(old_batch_size,context_size,-1))
         audio_lstm_result = torch.reshape(ha_last,(old_batch_size,context_size,-1))
         video_lstm_result = torch.reshape(hv_last,(old_batch_size,context_size,-1))
-        #print("final result from unimodal:",text_lstm_result.shape,audio_lstm_result.shape,video_lstm_result.shape)
+        #my_logger.debug("final result from unimodal:",text_lstm_result.shape,audio_lstm_result.shape,video_lstm_result.shape)
 
         
         return text_lstm_result,audio_lstm_result,video_lstm_result
@@ -252,7 +275,7 @@ class Unimodal_Context(nn.Module):
 class Multimodal_Context(nn.Module):
     def __init__(self,_config):
         super(Multimodal_Context, self).__init__()
-        print("Config in multimodal context:",_config["multimodal_context_configs"])
+        my_logger.debug("Config in multimodal context:",_config["multimodal_context_configs"])
         self.config = _config
         (in_text,in_audio,in_video) =  [ _config["num_context_sequence"]*e for e in _config["unimodal_context"]["hidden_sizes"]]
         
@@ -262,12 +285,17 @@ class Multimodal_Context(nn.Module):
         
         #The first one is hl
         self.fc_uni_text_to_mfn_text_input = nn.Linear(in_text,out_text)
+        self.text_in_drop = nn.Dropout(_config["multimodal_context_configs"]["text_in_drop"])
         
         #The second one is ha
         self.fc_uni_audio_to_mfn_audio_input = nn.Linear(in_audio,out_audio)
+        self.audio_in_drop = nn.Dropout(_config["multimodal_context_configs"]["audio_in_drop"])
+
         
         #The third one is hv
         self.fc_uni_video_to_mfn_video_input = nn.Linear(in_video,out_video)
+        self.video_in_drop = nn.Dropout(_config["multimodal_context_configs"]["video_in_drop"])
+
         
         #This one will output the initialization of the mfn meory
         encoder_config =self.config["multimodal_context_configs"]
@@ -287,6 +315,9 @@ class Multimodal_Context(nn.Module):
         n_head=encoder_config["n_head"],
         dropout=encoder_config["dropout"]
         ).to(self.config["device"])
+        
+        self.mem_in_drop = nn.Dropout(_config["multimodal_context_configs"]["mem_in_drop"])
+
 
     
     def forward(self,text_uni,audio_uni,video_uni,X_pos_Context,Y):
@@ -298,38 +329,38 @@ class Multimodal_Context(nn.Module):
         #So, first, we can just convert it to [10,5*64] here 10 is the batch size.
         #The same is done with audio and video uni
         reshaped_text_uni = text_uni.reshape((text_uni.shape[0],-1))
-        #print("reshaped text:",reshaped_text_uni.shape)
+        #my_logger.debug("reshaped text:",reshaped_text_uni.shape)
         reshaped_audio_uni = audio_uni.reshape((audio_uni.shape[0],-1))
-        #print("reshaped audio:",reshaped_audio_uni.shape)
+        #my_logger.debug("reshaped audio:",reshaped_audio_uni.shape)
         reshaped_video_uni = video_uni.reshape((video_uni.shape[0],-1))
-        #print("reshaped video:",reshaped_video_uni.shape)
+        #my_logger.debug("reshaped video:",reshaped_video_uni.shape)
         
         #Then, we will have three linear trans. So, all three reshaped tensors begin with 
         #shape (batch_size,config.num_context_sequence*config.unimodal_context.hidden_size) 
         #And we need to convert them to (batch_size,mfn_configs.config.[hl or ht or hv])
         #ht means hidden text
         #TODO: May use a dropout layer later
-        mfn_hl_input = self.fc_uni_text_to_mfn_text_input(reshaped_text_uni)
+        mfn_hl_input = self.text_in_drop(self.fc_uni_text_to_mfn_text_input(reshaped_text_uni))
         #ha means hidden audio
-        mfn_ha_input = self.fc_uni_audio_to_mfn_audio_input(reshaped_audio_uni)
+        mfn_ha_input = self.audio_in_drop(self.fc_uni_audio_to_mfn_audio_input(reshaped_audio_uni))
         #hv means hidden video
-        mfn_hv_input = self.fc_uni_video_to_mfn_video_input(reshaped_video_uni)
+        mfn_hv_input = self.video_in_drop(self.fc_uni_video_to_mfn_video_input(reshaped_video_uni))
         #These three will be used to initialize the three unimodal lstms of mfn
-        #print("mfn text lstm hidden init:",mfn_ht_input.shape)
-        #print("mfn audio lstm hidden init:",mfn_ha_input.shape)
-        #print("mfn video lstm hidden init:",mfn_hv_input.shape)
+        #my_logger.debug("mfn text lstm hidden init:",mfn_ht_input.shape)
+        #my_logger.debug("mfn audio lstm hidden init:",mfn_ha_input.shape)
+        #my_logger.debug("mfn video lstm hidden init:",mfn_hv_input.shape)
         
         
         #Now, we will do self attention to convert all three original text_uni,audio_uni and video_uni 
         #to feed into transformer. They are of shape (10,5,64), (10,5,8) and (10,5,16). SO, we need to first concat them 
         #to convert them to shape (20,5,64+8+16=88). So, we will concat them by axis=2
         all_three_orig_concat = torch.cat([text_uni,audio_uni,video_uni],dim=2)
-        print("all mods concatenated:",all_three_orig_concat.size())
+        my_logger.debug("all mods concatenated:",all_three_orig_concat.size())
         
         #Then, we are passing it through transformer
-        mfn_mem_lstm_input = self.self_attention_module(all_three_orig_concat,X_pos_Context,Y).squeeze(0)
+        mfn_mem_lstm_input = self.mem_in_drop(self.self_attention_module(all_three_orig_concat,X_pos_Context,Y)).squeeze(0)
         
-        #print("Getting output from transformer:",mfn_mem_lstm_input.size())
+        #my_logger.debug("Getting output from transformer:",mfn_mem_lstm_input.size())
         
         return mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_mem_lstm_input
         
@@ -342,12 +373,13 @@ class Multimodal_Context(nn.Module):
         
 
 class Contextual_MFN(nn.Module):
-    def __init__(self,_config):
+    def __init__(self,_config,logger):
         super(Contextual_MFN, self).__init__()
-        
-        #print("config in mfn)
+        global my_logger
+        my_logger = logger
+        #my_logger.debug("config in mfn)
         self.config=_config
-        print("the config in mfn_configs:",_config["mfn_configs"][0])
+        my_logger.debug("the config in mfn_configs:",_config["mfn_configs"][0])
         self.unimodal_context = Unimodal_Context(_config)
         self.multimodal_context = Multimodal_Context(_config)
         self.mfn = MFN(_config)
@@ -366,16 +398,16 @@ class Contextual_MFN(nn.Module):
         
         
         text_uni,audio_uni,video_uni = self.unimodal_context.forward(X_Context)
-        print("unimodal complete:",text_uni.shape, audio_uni.shape, video_uni.shape)
+        my_logger.debug("unimodal complete:",text_uni.shape, audio_uni.shape, video_uni.shape)
 
         mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_h_mem_input = \
           self.multimodal_context.forward(text_uni,audio_uni,video_uni,X_pos_Context,Y)
           
-        print("Ready to init the mfn with this:","L:",mfn_hl_input.shape,"A:",mfn_ha_input.shape,\
+        my_logger.debug("Ready to init the mfn with this:","L:",mfn_hl_input.shape,"A:",mfn_ha_input.shape,\
               "V:",mfn_hv_input.shape,"mem:",mfn_h_mem_input.shape) 
         
         prediction = self.mfn.forward(X_Punchline,mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_h_mem_input)
-        print("result from mfn:",prediction)
+        my_logger.debug("result from mfn:",prediction)
         return prediction
         #h_l_prior,h_a_prior,h_v_prior,mem_prior
         

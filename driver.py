@@ -14,6 +14,7 @@ import random
 import torch
 import tqdm
 import os
+import logging
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -49,9 +50,12 @@ ex = Experiment('multimodal_humor')
 from sacred.observers import MongoObserver
 
 #We must change url to the the bluehive node on which the mongo server is running
-url_database = 'bhc0086:27017'
+url_database = 'bhc0085:27017'
 mongo_database_name = 'prototype'
 ex.observers.append(MongoObserver.create(url= url_database ,db_name= mongo_database_name))
+
+my_logger = logging.getLogger()
+my_logger.disabled=False
 
 @ex.config
 def cfg():
@@ -86,9 +90,15 @@ def cfg():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     use_context=True
-    #use_text=True
-    use_audio=False
-    use_video=False
+    use_context_text=True
+    use_context_audio=True
+    use_context_video = True
+    
+    use_punchline_text=True
+    use_punchline_audio=True
+    use_punchline_video=True
+    
+    
     
     
     save_model = "best_model"
@@ -110,7 +120,10 @@ def cfg():
                    'dropout':0.1,'embs_share_weight':True,'proj_share_weight':True,
                    'label_smoothing': True,'max_token_seq_len':num_context_sequence,
                    'n_source_features':sum(unimodal_context["hidden_sizes"]),
-                   'post_encoder':{'mfn_mem_input_drop':random.choice([0.0,0.2,0.5,0.7])}
+                   'text_in_drop':random.choice([0.0,0.1, 0.2,0.5]),
+                   'audio_in_drop':random.choice([0.0,0.2,0.5,0.1]),
+                   'video_in_drop':random.choice([0.0,0.2,0.5,0.1]),
+                   'mem_in_drop':random.choice([0.0,0.2,0.5,0.1])
                    
                    }
 
@@ -165,29 +178,29 @@ class Generic_Dataset(Dataset):
     def __getitem__(self, idx):
         X = torch.FloatTensor(self.X[idx])
         
-        #print("The P:",X.size(),X[:,:])
+        #my_logger.debug("The P:",X.size(),X[:,:])
         #TODO: Must change it when correct dataset arrives
         #we are just repeating each entry 
         X_context = torch.FloatTensor(np.repeat(self.X[idx],
             self.config["num_context_sequence"],0).reshape((self.config["num_context_sequence"],
                        self.config["max_seq_len"],-1))) 
-        #print("The Context:",X_context.size())
+        #my_logger.debug("The Context:",X_context.size())
         
         #Basically, we will think the whole sentence as a sequence.
         #all the words will be merged. If all of them are zero, then it is a padding 
         reshaped_context = torch.reshape(X_context,(X_context.shape[0],-1))
-        #print("The reshaped context:",reshaped_context.size())
+        #my_logger.debug("The reshaped context:",reshaped_context.size())
         padding_rows = np.where(~reshaped_context.cpu().numpy().any(axis=1))[0]
         n_rem_entries= reshaped_context.shape[0] - len(padding_rows)
         X_pos_context = np.concatenate(( np.zeros((len(padding_rows),)), np.array([pos+1 for pos in range(n_rem_entries)])))
-        #print("X_pos:",X_pos," Len:",X_pos.shape)
+        #my_logger.debug("X_pos:",X_pos," Len:",X_pos.shape)
         X_pos_context = torch.LongTensor(X_pos_context)   
-        #print("X_pos_context:",X_pos_context.shape,X_pos_context)
+        #my_logger.debug("X_pos_context:",X_pos_context.shape,X_pos_context)
 
         Y = torch.FloatTensor([self.Y[idx]])
         #TODO:MUST ERASE in new dataset, doing to run sigmoid
         Y = Y>0
-        #print("The new Y:",Y)
+        #my_logger.debug("The new Y:",Y)
         
         return X,X_context,X_pos_context,Y
 
@@ -233,7 +246,7 @@ def load_saved_data(_config):
 @ex.capture
 def set_up_data_loader(_config):
     train_X,train_Y,dev_X,dev_Y,test_X,test_Y = load_saved_data()
-    print("all data loaded. Now creating data loader")
+    my_logger.debug("all data loaded. Now creating data loader")
     
     if(_config["prototype"]):
         train_X = train_X[:10,:,:]
@@ -260,7 +273,7 @@ def set_up_data_loader(_config):
                         shuffle=_config["shuffle"], num_workers=_config["num_workers"])
     
     
-    #print(train_X.shape,train_Y.shape,dev_X.shape,dev_Y.shape,test_X.shape,test_Y.shape)
+    #my_logger.debug(train_X.shape,train_Y.shape,dev_X.shape,dev_Y.shape,test_X.shape,test_Y.shape)
     #data_loader = test_data_loader(train_X,train_Y,_config)
     return train_dataloader,dev_dataloader,test_dataloader
 
@@ -275,31 +288,7 @@ def set_random_seed(_seed):
     torch.manual_seed(_seed)
     torch.cuda.manual_seed(_seed)
 
-@ex.capture
-def train_mfn(train_data_loader,valid_data_loader,test_data_loader,_config):
-    print(_config)
-    
-    #In our program, we through it as (batch_size,max_seq_len_num_features).
-    #For doing that, LSTM has to programeed as batch_first=true manner. SO, we need to swap axes.
-    #Now, paul did not use any dataloader. So, he does it here. We can do it in the train loop
-    #for each batch
-#     X_train = X_train.swapaxes(0,1)
-#     X_valid = X_valid.swapaxes(0,1)
-#     X_test = X_test.swapaxes(0,1)
-    #torch.permute(1,0,2) is our solution
-    
-    [config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig] = _config["mfn_configs"]
 
-    model = MFN(config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig)
-
-    optimizer = optim.Adam(model.parameters(),lr=config["lr"])
-
-    criterion = nn.L1Loss()
-
-    model = model.to(_config["device"])
-    criterion = criterion.to(_config["device"])
-    scheduler = ReduceLROnPlateau(optimizer,mode='min',patience=100,factor=0.5,verbose=True)
-    
 
 @ex.capture
 def train_epoch(model, training_data, criterion,optimizer, device, smoothing,_config):
@@ -318,13 +307,13 @@ def train_epoch(model, training_data, criterion,optimizer, device, smoothing,_co
         
         
         
-        print("\nData_size:\nX_P:", X_Punchline.shape,", X_C:",X_Context.shape," Y:",Y.shape)
+        my_logger.debug("\nData_size:\nX_P:", X_Punchline.shape,", X_C:",X_Context.shape," Y:",Y.shape)
         #TODO: Doing it to avoid error. Must remove it afterwards.
         
         # forward
         optimizer.zero_grad()
         predictions = model(X_Punchline,X_Context,X_pos_Context,Y).squeeze(0)
-        #print(predictions.size(),train_Y.size())
+        #my_logger.debug(predictions.size(),train_Y.size())
 
         loss = criterion(predictions,Y.float())
         loss.backward()
@@ -369,7 +358,7 @@ def reload_model_from_file(file_path):
         _config = checkpoint['_config']
         
         #encoder_config = _config["multimodal_context_configs"]
-        model = Contextual_MFN(_config).to(_config["device"])
+        model = Contextual_MFN(_config,my_logger).to(_config["device"])
         
 
         
@@ -422,7 +411,7 @@ def train(model, training_data, validation_data, optimizer,criterion,_config,_ru
         train_loss = train_epoch(
             model, training_data, criterion,optimizer, device = _config["device"],
                 smoothing=_config["multimodal_context_configs"]["label_smoothing"])
-        #print("\nepoch:{},train_loss:{}".format(epoch_i,train_loss))
+        #my_logger.debug("\nepoch:{},train_loss:{}".format(epoch_i,train_loss))
         _run.log_scalar("training.loss", train_loss, epoch_i)
 
 
@@ -434,7 +423,7 @@ def train(model, training_data, validation_data, optimizer,criterion,_config,_ru
         
         
         valid_losses.append(valid_loss)
-        print("\nepoch:{},train_loss:{}, valid_loss:{}".format(epoch_i,train_loss,valid_loss))
+        my_logger.debug("\nepoch:{},train_loss:{}, valid_loss:{}".format(epoch_i,train_loss,valid_loss))
 
         model_state_dict = model.state_dict()
         checkpoint = {
@@ -446,16 +435,58 @@ def train(model, training_data, validation_data, optimizer,criterion,_config,_ru
             if _config["save_mode"] == 'best':
                 if valid_loss <= min(valid_losses):
                     torch.save(checkpoint, model_path)
-                    print('    - [Info] The checkpoint file has been updated.')
+                    my_logger.debug('    - [Info] The checkpoint file has been updated.')
     #After the entire training is over, save the best model as artifact in the mongodb, only if it is not protptype
-    if(_config["prototype"]==False):
-        ex.add_artifact(model_path)
+    #Due to space constraint, we are not saving the model since it is not necessary as we know the seed. If we need to regenrate the result
+    #simple running it again should work
+    # if(_config["prototype"]==False):
+    #     ex.add_artifact(model_path)
 
 
 @ex.capture
-def test_score(test_data_loader,criterion,_config,_run):
+def test_score_from_file(test_data_loader,criterion,_config,_run):
     model_path =  _config["best_model_path"]
     model = reload_model_from_file(model_path)
+
+    predictions,y_test = test_epoch(model,test_data_loader,criterion,_config["device"])
+    my_logger.debug("predictions:",predictions,predictions.shape)
+    my_logger.debug("ytest:",y_test,y_test.shape)
+    mae = np.mean(np.absolute(predictions-y_test))
+    my_logger.debug("mae: ", mae)
+    
+    corr = np.corrcoef(predictions,y_test)[0][1]
+    my_logger.debug("corr: ", corr)
+    
+    mult = round(sum(np.round(predictions)==np.round(y_test))/float(len(y_test)),5)
+    print("mult_acc: ", mult)
+    
+    f_score = round(f1_score(np.round(predictions),np.round(y_test),average='weighted'),5)
+    print("mult f_score: ", f_score)
+    
+    #TODO:Make sure that it is correct
+    #true_label = (y_test >= 0)
+    true_label = (y_test)
+
+    predicted_label = (predictions >= 0)
+    print("Confusion Matrix :")
+    confusion_matrix_result = confusion_matrix(true_label, predicted_label)
+    print(confusion_matrix_result)
+    
+    print("Classification Report :")
+    classification_report_score = classification_report(true_label, predicted_label, digits=5)
+    print(classification_report_score)
+    
+    accuracy = accuracy_score(true_label, predicted_label)
+    print("Accuracy ",accuracy )
+    
+    _run.info['final_result']={'accuracy':accuracy,'mae':mae,'corr':corr,"mult_acc":mult,
+             "mult_f_score":f_score,"Confusion Matrix":confusion_matrix_result,
+             "Classification Report":classification_report_score}
+    return accuracy
+
+@ex.capture
+def test_score_from_model(model,test_data_loader,criterion,_config,_run):
+    
 
     predictions,y_test = test_epoch(model,test_data_loader,criterion,_config["device"])
     print("predictions:",predictions,predictions.shape)
@@ -494,7 +525,6 @@ def test_score(test_data_loader,criterion,_config,_run):
     return accuracy
 
 
-
 @ex.automain
 def driver(_config):
     
@@ -506,7 +536,7 @@ def driver(_config):
     
     multimodal_context_config = _config["multimodal_context_configs"]
     
-    model = Contextual_MFN(_config).to(_config["device"])
+    model = Contextual_MFN(_config,my_logger).to(_config["device"])
     #for now, we will use the same scheduler for the entire model.
     #Later, if necessary, we may use the default optimizer of MFN
     #TODO: May have to use separate scheduler for transformer and mfn
@@ -529,8 +559,9 @@ def driver(_config):
     #scheduler = ReduceLROnPlateau(optimizer,mode='min',patience=100,factor=0.5,verbose=True)
 
     train(model, train_data_loader,dev_data_loader, optimizer,criterion)
+    test_accuracy =  test_score_from_model(model,test_data_loader,criterion)
     
-    test_accuracy = test_score(test_data_loader,criterion)
+    #test_accuracy = test_score_from_file(test_data_loader,criterion)
     ex.log_scalar("test.accuracy",test_accuracy)
     results = dict()
     #I believe that it will try to minimize the rest. Let's see how it plays out
