@@ -1,0 +1,18 @@
+#!/bin/sh
+#SBATCH -p standard
+#SBATCH --mem=2gb
+#SBATCH -c 1
+#SBATCH -a 0-29
+#SBATCH -t 5-0:00:00  
+#SBATCH -J mult_humor_reserved_echowdh2
+#SBATCH -o /scratch/echowdh2/output/mult_humor_reserved_output%j
+#SBATCH -e /scratch/echowdh2/output/mult_humor_reserved_error%j
+#SBATCH --mail-type=all    
+
+module load anaconda3/5.3.0b
+source activate wasifur
+module load git
+
+python force_align.py "/scratch/echowdh2/ETS_interview_dataset/" 30
+
+

@@ -36,6 +36,20 @@ from transformer.Optim import ScheduledOptim
 
 my_logger=None
 
+
+def load_pickle(pickle_file):
+    try:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f)
+    except UnicodeDecodeError as e:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f, encoding='latin1')
+    except Exception as e:
+        print('Unable to load data ', pickle_file, ':', e)
+        raise
+    return pickle_data
+
+
 class MFN(nn.Module):
     def __init__(self,_config):
         
@@ -44,7 +58,7 @@ class MFN(nn.Module):
         self.device = _config["device"]
         config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig = \
             _config["mfn_configs"]
-        [self.d_l,self.d_a,self.d_v] = config["input_dims"]
+        [self.d_l_orig,self.d_a,self.d_v,self.d_l_embedded] = config["input_dims"]
         [self.dh_l,self.dh_a,self.dh_v] = config["h_dims"]
         total_h_dim = self.dh_l+self.dh_a+self.dh_v
         self.mem_dim = config["memsize"]
@@ -64,7 +78,7 @@ class MFN(nn.Module):
         gamma2_dropout = gamma2Config["drop"]
         out_dropout = outConfig["drop"]
 
-        self.lstm_l = nn.LSTMCell(self.d_l, self.dh_l)
+        self.lstm_l = nn.LSTMCell(self.d_l_embedded, self.dh_l)
         self.lstm_a = nn.LSTMCell(self.d_a, self.dh_a)
         self.lstm_v = nn.LSTMCell(self.d_v, self.dh_v)
 
@@ -88,15 +102,17 @@ class MFN(nn.Module):
         self.out_fc2 = nn.Linear(h_out, output_dim)
         self.out_dropout = nn.Dropout(out_dropout)
         
+        self.word_embedding = Word_Embedding(_config)
+        
         
         
         
     
     def forward(self,x,c_l_prior,c_a_prior,c_v_prior,c_mem_prior):
         
-        x_l = x[:,:,:self.d_l]
-        x_a = x[:,:,self.d_l:self.d_l+self.d_a]
-        x_v = x[:,:,self.d_l+self.d_a:]
+        x_l = self.word_embedding(x[:,:,:self.d_l_orig])
+        x_a = x[:,:,self.d_l_orig:self.d_l_orig+self.d_a]
+        x_v = x[:,:,self.d_l_orig+self.d_a:]
         
         #If we do not need to use punchline text, we can zero it out
         if(self.config["use_punchline_text"]==False):
@@ -185,14 +201,33 @@ class MFN(nn.Module):
         #This new line runs the sigmoid and gives 0/1 output. Our losee function takes care of that
         #prediction = torch.sigmoid(output)>=0.5
         return output
+
+class Word_Embedding(nn.Module):
+    def __init__(self,_config):
         
+        super(Word_Embedding, self).__init__()  
+        
+        word_emb_list_file=os.path.join(_config["dataset_location"],"humor_word_embedding_list.pkl")
+        humor_word_emb_list=load_pickle(word_emb_list_file)
+        
+        vocab=torch.LongTensor(humor_word_emb_list)
+        self.embed = nn.Embedding(len(vocab),len(vocab[0]))
+        self.embed.weight.data.copy_(vocab)
+        self.embed.weight.requires_grad = False
+        
+    def forward(self,X_index):
+        #print("We got as X index",X_index.shape)
+        #it returns a batc,seq_len,1,300 dim vector bt our calculation expects a batch,seq_len,300d vector
+        return self.embed(X_index.long()).squeeze(-2)
+
+
  
 class Unimodal_Context(nn.Module):
     def __init__(self,_config):
         super(Unimodal_Context, self).__init__()
 
         relevant_config = _config["unimodal_context"]
-        #my_logger.debug("Unimodal configs:",relevant_config)
+        #print("Unimodal configs:",relevant_config)
         #TODO: Must change it id text is sent as embedding. ANother way is to make the change in config file directly
         [self.h_text,self.h_audio,self.h_video] = relevant_config["hidden_sizes"]
         self.text_LSTM = nn.LSTM(input_size = relevant_config["text_lstm_input"],
@@ -209,6 +244,8 @@ class Unimodal_Context(nn.Module):
         self.input_dims = _config["input_dims"]
         self.config=_config
         
+        self.word_embedding = Word_Embedding(_config)
+        
     def forward(self,X_context):
         old_batch_size,context_size,seq_len,num_feats = X_context.size()
         
@@ -220,8 +257,9 @@ class Unimodal_Context(nn.Module):
         new_batch_size = old_batch_size*context_size
 
         #my_logger.debug("\nX_context:",X_context.size())
-        
-        text_context = X_context[:,:,:self.input_dims[0]]
+        #The X_Context entries do not have a 300 length embedding, only an index is present.
+        #we will substiture the index with the 300-D vector
+        text_context = self.word_embedding(X_context[:,:,:self.input_dims[0]])
         audio_context = X_context[:,:,self.input_dims[0]:self.input_dims[0]+self.input_dims[1]]
         video_context = X_context[:,:,self.input_dims[0]+self.input_dims[1]:]
         
@@ -241,7 +279,7 @@ class Unimodal_Context(nn.Module):
             #my_logger.debug("The zeroed video:",x_v)
             
         
-        my_logger.debug("Context shapes:\n","t:",text_context.shape,"a:",audio_context.shape,"v:",video_context.shape)
+        #print("Context shapes:\n","t:",text_context.shape,"a:",audio_context.shape,"v:",video_context.shape)
 
         
        
@@ -275,7 +313,7 @@ class Unimodal_Context(nn.Module):
 class Multimodal_Context(nn.Module):
     def __init__(self,_config):
         super(Multimodal_Context, self).__init__()
-        my_logger.debug("Config in multimodal context:",_config["multimodal_context_configs"])
+        #print("Config in multimodal context:",_config["multimodal_context_configs"])
         self.config = _config
         (in_text,in_audio,in_video) =  [ _config["num_context_sequence"]*e for e in _config["unimodal_context"]["hidden_sizes"]]
         
@@ -379,7 +417,7 @@ class Contextual_MFN(nn.Module):
         my_logger = logger
         #my_logger.debug("config in mfn)
         self.config=_config
-        my_logger.debug("the config in mfn_configs:",_config["mfn_configs"][0])
+        #print("the config in mfn_configs:",_config["mfn_configs"][0])
         self.unimodal_context = Unimodal_Context(_config)
         self.multimodal_context = Multimodal_Context(_config)
         self.mfn = MFN(_config)
@@ -394,20 +432,20 @@ class Contextual_MFN(nn.Module):
         
         #Our X_punchline is in format batch_size*time*features.MFN expects it in time*batch_size*features
         #since it performs operation per time index across all batched. So, we will swap axes here.
+        #since the concept of "batch" is absent n dataloader get_item, we are doing it here.
         X_Punchline = X_Punchline.permute(1,0,2)
         
         
         text_uni,audio_uni,video_uni = self.unimodal_context.forward(X_Context)
-        my_logger.debug("unimodal complete:",text_uni.shape, audio_uni.shape, video_uni.shape)
+        #print("unimodal complete:",text_uni.shape, audio_uni.shape, video_uni.shape)
 
         mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_h_mem_input = \
           self.multimodal_context.forward(text_uni,audio_uni,video_uni,X_pos_Context,Y)
           
-        my_logger.debug("Ready to init the mfn with this:","L:",mfn_hl_input.shape,"A:",mfn_ha_input.shape,\
-              "V:",mfn_hv_input.shape,"mem:",mfn_h_mem_input.shape) 
-        
+        #print("Ready to init the mfn with this:","L:",mfn_hl_input.shape,"A:",mfn_ha_input.shape,\
+              #"V:",mfn_hv_input.shape,"mem:",mfn_h_mem_input.shape) 
         prediction = self.mfn.forward(X_Punchline,mfn_hl_input,mfn_ha_input,mfn_hv_input,mfn_h_mem_input)
-        my_logger.debug("result from mfn:",prediction)
+        #print("result from mfn:",prediction)
         return prediction
         #h_l_prior,h_a_prior,h_v_prior,mem_prior
         

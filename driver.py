@@ -5,7 +5,6 @@ Created on Thu Feb 14 07:59:01 2019
 
 @author: echowdh2
 """
-
 import faulthandler
 faulthandler.enable()
 import sys
@@ -51,16 +50,28 @@ from sacred.observers import MongoObserver
 
 #We must change url to the the bluehive node on which the mongo server is running
 url_database = 'bhc0085:27017'
-mongo_database_name = 'prototype'
+mongo_database_name = 'real_model'
 ex.observers.append(MongoObserver.create(url= url_database ,db_name= mongo_database_name))
 
 my_logger = logging.getLogger()
-my_logger.disabled=False
+my_logger.disabled=True
+
+def load_pickle(pickle_file):
+    try:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f)
+    except UnicodeDecodeError as e:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f, encoding='latin1')
+    except Exception as e:
+        print('Unable to load data ', pickle_file, ':', e)
+        raise
+    return pickle_data
 
 @ex.config
 def cfg():
     node_index = 0
-    epoch = 75 #paul did 50
+    epoch = 50 #paul did 50
     shuffle = True
     num_workers = 2
     best_model_path =  "/scratch/echowdh2/saved_models_from_projects/multimodal_humor/"+str(node_index) +"_best_model.chkpt"
@@ -83,6 +94,8 @@ def cfg():
     #These two are coming from running_different_configs.py
     dev_batch_size=None
     test_batch_size=None
+    
+    
 
    
     
@@ -110,9 +123,13 @@ def cfg():
         
     #TODO: May have to change the hidden_sizes to match with later stages
     #TODO:Will need to add RANDOM CHOICE FOR hidden_size later
-    #Basically the hidden_sizes is an arry containing hidden_size for all three [t,a,v]    
-    unimodal_context = {"text_lstm_input":input_dims[0],"audio_lstm_input":input_dims[1],
-                        "video_lstm_input":input_dims[2],"hidden_sizes":[64,8,16]
+    #Basically the hidden_sizes is an arry containing hidden_size for all four [t_old,a,v,t_embedded]
+    #THe LSTM will get the embedded text vector,so we are using the last one 
+    hidden_text =random.choice([32,64,88,128,156,256])
+    hidden_audio = random.choice([8,16,32,48,64,80])
+    hidden_video = random.choice([8,16,32,48,64,80])
+    unimodal_context = {"text_lstm_input":input_dims[3],"audio_lstm_input":input_dims[1],
+                        "video_lstm_input":input_dims[2],"hidden_sizes":[hidden_text,hidden_audio,hidden_video]
                                                      }
     
     multimodal_context_configs = {'d_word_vec':512,'d_model':512,'d_inner_hid':2048,
@@ -165,6 +182,99 @@ def cfg():
     mfn_configs = [config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig]
    
 
+class HumorDataset(Dataset):
+    
+    def __init__(self,id_list,_config,):
+        self.id_list = id_list
+        data_path = _config["dataset_location"]
+            
+
+
+        openface_file= os.path.join(data_path,'word_aligned_openface_sdk.pkl')
+        covarep_file=os.path.join(data_path,"word_aligned_covarep_sdk.pkl")
+        word_idx_file=os.path.join(data_path,"humor_word_embedding_idx_sdk.pkl")
+        self.word_aligned_openface_sdk=load_pickle(openface_file)
+        self.word_aligned_covarep_sdk=load_pickle(covarep_file)
+        self.word_embedding_idx_sdk=load_pickle(word_idx_file)
+        self.of_d=75
+        self.cvp_d=81
+        self.max_context_len=_config["num_context_sequence"]
+        self.max_sen_len=_config["max_seq_len"]
+    
+    def paded_word_idx(self,seq,max_sen_len=20,left_pad=1):
+        seq=seq[0:max_sen_len]
+        pad_w=np.concatenate((np.zeros(max_sen_len-len(seq)),seq),axis=0)
+        pad_w=np.array([[w_id] for  w_id in pad_w])
+        return pad_w
+
+    def padded_covarep_features(self,seq,max_sen_len=20,left_pad=1):
+        seq=seq[0:max_sen_len]
+        return np.concatenate((np.zeros((max_sen_len-len(seq),self.cvp_d)),seq),axis=0)
+
+    def padded_openface_features(self,seq,max_sen_len=20,left_pad=1):
+        seq=seq[0:max_sen_len]
+        return np.concatenate((np.zeros(((max_sen_len-len(seq)),self.of_d)),seq),axis=0)
+
+    def padded_context_features(self,context_w,context_of,context_cvp,max_context_len=5,max_sen_len=20):
+        context_w=context_w[-max_context_len:]
+        context_of=context_of[-max_context_len:]
+        context_cvp=context_cvp[-max_context_len:]
+
+        padded_context=[]
+        for i in range(len(context_w)):
+            p_seq_w=self.paded_word_idx(context_w[i],max_sen_len)
+            p_seq_cvp=self.padded_covarep_features(context_cvp[i],max_sen_len)
+            p_seq_of=self. padded_openface_features(context_of[i],max_sen_len)
+            padded_context.append(np.concatenate((p_seq_w,p_seq_cvp,p_seq_of),axis=1))
+
+        pad_c_len=max_context_len-len(padded_context)
+        padded_context=np.array(padded_context)
+        
+        if not padded_context.any():
+            return np.zeros((max_context_len,max_sen_len,157))
+        
+        return np.concatenate((np.zeros((pad_c_len,max_sen_len,157)),padded_context),axis=0)
+    
+    def padded_punchline_features(self,punchline_w,punchline_of,punchline_cvp,max_sen_len=20,left_pad=1):
+        
+        p_seq_w=self.paded_word_idx(punchline_w,max_sen_len)
+        p_seq_cvp=self.padded_covarep_features(punchline_cvp,max_sen_len)
+        p_seq_of=self.padded_openface_features(punchline_of,max_sen_len)
+        return np.concatenate((p_seq_w,p_seq_cvp,p_seq_of),axis=1)
+        
+    
+    def __len__(self):
+        return len(self.id_list)
+    
+    def __getitem__(self,index):
+        
+        hid=self.id_list[index]
+        punchline_w=np.array(self.word_embedding_idx_sdk[hid]['punchline_emb_idx_list'])
+        punchline_of=np.array(self.word_aligned_openface_sdk[hid]['punchline_features'])
+        punchline_cvp=np.array(self.word_aligned_covarep_sdk[hid]['punchline_features'])
+        
+        context_w=np.array(self.word_embedding_idx_sdk[hid]['context_embd_idx_matrix'])
+        context_of=np.array(self.word_aligned_openface_sdk[hid]['context_features'])
+        context_cvp=np.array(self.word_aligned_covarep_sdk[hid]['context_features'])
+        
+        
+        X_punch=torch.FloatTensor(self.padded_punchline_features(punchline_w,punchline_of,punchline_cvp,self.max_sen_len))
+        
+        X_context=torch.FloatTensor(self.padded_context_features(context_w,context_of,context_cvp,self.max_context_len,self.max_sen_len))
+        #Basically, we will think the whole sentence as a sequence.
+        #all the words will be merged. If all of them are zero, then it is a padding 
+        reshaped_context = torch.reshape(X_context,(X_context.shape[0],-1))
+        #my_logger.debug("The reshaped context:",reshaped_context.size())
+        padding_rows = np.where(~reshaped_context.cpu().numpy().any(axis=1))[0]
+        n_rem_entries= reshaped_context.shape[0] - len(padding_rows)
+        X_pos_context = np.concatenate(( np.zeros((len(padding_rows),)), np.array([pos+1 for pos in range(n_rem_entries)])))
+        #my_logger.debug("X_pos:",X_pos," Len:",X_pos.shape)
+        X_pos_context = torch.LongTensor(X_pos_context)   
+        #my_logger.debug("X_pos_context:",X_pos_context.shape,X_pos_context)
+        
+        Y=torch.FloatTensor([self.word_embedding_idx_sdk[hid]['label']])
+                
+        return X_punch,X_context,X_pos_context,Y
 
 class Generic_Dataset(Dataset):
     def __init__(self, X, Y,_config):
@@ -245,31 +355,41 @@ def load_saved_data(_config):
 
 @ex.capture
 def set_up_data_loader(_config):
-    train_X,train_Y,dev_X,dev_Y,test_X,test_Y = load_saved_data()
-    my_logger.debug("all data loaded. Now creating data loader")
+    # train_X,train_Y,dev_X,dev_Y,test_X,test_Y = load_saved_data()
+    # my_logger.debug("all data loaded. Now creating data loader")
     
+    # if(_config["prototype"]):
+    #     train_X = train_X[:10,:,:]
+    #     train_Y = train_Y[:10]
+        
+    #     dev_X = dev_X[:10,:,:]
+    #     dev_Y = dev_Y[:10]
+        
+    #     test_X = test_X[:10,:,:]
+    #     test_Y = test_Y[:10]
+    dataset_id_file= os.path.join(_config["dataset_location"], "dataset_id_sdk.pkl")
+    dataset_id=load_pickle(dataset_id_file)
+    train=dataset_id['train']
+    dev=dataset_id['dev']
+    test=dataset_id['test']
     if(_config["prototype"]):
-        train_X = train_X[:10,:,:]
-        train_Y = train_Y[:10]
-        
-        dev_X = dev_X[:10,:,:]
-        dev_Y = dev_Y[:10]
-        
-        test_X = test_X[:10,:,:]
-        test_Y = test_Y[:10]
-        
-        
-    train_dataset = Generic_Dataset(train_X,train_Y,_config = _config)
-    dev_dataset = Generic_Dataset(dev_X,dev_Y,_config=_config)
-    test_dataset = Generic_Dataset(test_X,test_Y,_config=_config)
+        train=train[:10]
+        dev=dev[:10]
+        test=test[:10]
+    training_set = HumorDataset(train,_config)
+    dev_set = HumorDataset(dev,_config)
+    test_set = HumorDataset(test,_config)
+    # train_dataset = Generic_Dataset(train_X,train_Y,_config = _config)
+    # dev_dataset = Generic_Dataset(dev_X,dev_Y,_config=_config)
+    # test_dataset = Generic_Dataset(test_X,test_Y,_config=_config)
     
-    train_dataloader = DataLoader(train_dataset, batch_size=_config["train_batch_size"],
+    train_dataloader = DataLoader(training_set, batch_size=_config["train_batch_size"],
                         shuffle=_config["shuffle"], num_workers=_config["num_workers"])
     
-    dev_dataloader = DataLoader(dev_dataset, batch_size=_config["dev_batch_size"],
+    dev_dataloader = DataLoader(dev_set, batch_size=_config["dev_batch_size"],
                         shuffle=_config["shuffle"], num_workers=_config["num_workers"])
     
-    test_dataloader = DataLoader(test_dataset, batch_size=_config["test_batch_size"],
+    test_dataloader = DataLoader(test_set, batch_size=_config["test_batch_size"],
                         shuffle=_config["shuffle"], num_workers=_config["num_workers"])
     
     
@@ -307,9 +427,9 @@ def train_epoch(model, training_data, criterion,optimizer, device, smoothing,_co
         
         
         
-        my_logger.debug("\nData_size:\nX_P:", X_Punchline.shape,", X_C:",X_Context.shape," Y:",Y.shape)
-        #TODO: Doing it to avoid error. Must remove it afterwards.
-        
+        # print("\nData_size:\nX_P:", X_Punchline.shape,", X_C:",X_Context.shape,",X_C_pos:",\
+        #       X_pos_Context.shape,"Y:",Y.shape)
+                
         # forward
         optimizer.zero_grad()
         predictions = model(X_Punchline,X_Context,X_pos_Context,Y).squeeze(0)
@@ -411,7 +531,6 @@ def train(model, training_data, validation_data, optimizer,criterion,_config,_ru
         train_loss = train_epoch(
             model, training_data, criterion,optimizer, device = _config["device"],
                 smoothing=_config["multimodal_context_configs"]["label_smoothing"])
-        #my_logger.debug("\nepoch:{},train_loss:{}".format(epoch_i,train_loss))
         _run.log_scalar("training.loss", train_loss, epoch_i)
 
 
@@ -423,8 +542,9 @@ def train(model, training_data, validation_data, optimizer,criterion,_config,_ru
         
         
         valid_losses.append(valid_loss)
-        my_logger.debug("\nepoch:{},train_loss:{}, valid_loss:{}".format(epoch_i,train_loss,valid_loss))
-
+        print("\nepoch:{},train_loss:{}, valid_loss:{}".format(epoch_i,train_loss,valid_loss))
+      #Due to space3 constraint, we are not saving the models. There should be enough info
+      #in sacred to reproduce the results on the fly
         model_state_dict = model.state_dict()
         checkpoint = {
             'model': model_state_dict,
@@ -458,71 +578,33 @@ def test_score_from_file(test_data_loader,criterion,_config,_run):
     my_logger.debug("corr: ", corr)
     
     mult = round(sum(np.round(predictions)==np.round(y_test))/float(len(y_test)),5)
-    print("mult_acc: ", mult)
+    #print("mult_acc: ", mult)
     
     f_score = round(f1_score(np.round(predictions),np.round(y_test),average='weighted'),5)
-    print("mult f_score: ", f_score)
+    #print("mult f_score: ", f_score)
     
     #TODO:Make sure that it is correct
     #true_label = (y_test >= 0)
     true_label = (y_test)
 
     predicted_label = (predictions >= 0)
-    print("Confusion Matrix :")
+    #print("Confusion Matrix :")
     confusion_matrix_result = confusion_matrix(true_label, predicted_label)
-    print(confusion_matrix_result)
+    #print(confusion_matrix_result)
     
-    print("Classification Report :")
+    #print("Classification Report :")
     classification_report_score = classification_report(true_label, predicted_label, digits=5)
-    print(classification_report_score)
+    #print(classification_report_score)
     
     accuracy = accuracy_score(true_label, predicted_label)
-    print("Accuracy ",accuracy )
+    print("Accuracy:",accuracy )
     
     _run.info['final_result']={'accuracy':accuracy,'mae':mae,'corr':corr,"mult_acc":mult,
              "mult_f_score":f_score,"Confusion Matrix":confusion_matrix_result,
              "Classification Report":classification_report_score}
     return accuracy
 
-@ex.capture
-def test_score_from_model(model,test_data_loader,criterion,_config,_run):
-    
 
-    predictions,y_test = test_epoch(model,test_data_loader,criterion,_config["device"])
-    print("predictions:",predictions,predictions.shape)
-    print("ytest:",y_test,y_test.shape)
-    mae = np.mean(np.absolute(predictions-y_test))
-    print("mae: ", mae)
-    
-    corr = np.corrcoef(predictions,y_test)[0][1]
-    print("corr: ", corr)
-    
-    mult = round(sum(np.round(predictions)==np.round(y_test))/float(len(y_test)),5)
-    print("mult_acc: ", mult)
-    
-    f_score = round(f1_score(np.round(predictions),np.round(y_test),average='weighted'),5)
-    print("mult f_score: ", f_score)
-    
-    #TODO:Make sure that it is correct
-    #true_label = (y_test >= 0)
-    true_label = (y_test)
-
-    predicted_label = (predictions >= 0)
-    print("Confusion Matrix :")
-    confusion_matrix_result = confusion_matrix(true_label, predicted_label)
-    print(confusion_matrix_result)
-    
-    print("Classification Report :")
-    classification_report_score = classification_report(true_label, predicted_label, digits=5)
-    print(classification_report_score)
-    
-    accuracy = accuracy_score(true_label, predicted_label)
-    print("Accuracy ",accuracy )
-    
-    _run.info['final_result']={'accuracy':accuracy,'mae':mae,'corr':corr,"mult_acc":mult,
-             "mult_f_score":f_score,"Confusion Matrix":confusion_matrix_result,
-             "Classification Report":classification_report_score}
-    return accuracy
 
 
 @ex.automain
@@ -533,6 +615,8 @@ def driver(_config):
     #X_train, y_train, X_valid, y_valid, X_test, y_test = load_saved_data()
     #print(X_train, y_train, X_valid, y_valid, X_test, y_test)
     train_data_loader,dev_data_loader,test_data_loader = set_up_data_loader()
+    
+    
     
     multimodal_context_config = _config["multimodal_context_configs"]
     
@@ -559,9 +643,10 @@ def driver(_config):
     #scheduler = ReduceLROnPlateau(optimizer,mode='min',patience=100,factor=0.5,verbose=True)
 
     train(model, train_data_loader,dev_data_loader, optimizer,criterion)
-    test_accuracy =  test_score_from_model(model,test_data_loader,criterion)
+
+    #test_accuracy =  test_score_from_model(model,test_data_loader,criterion)
     
-    #test_accuracy = test_score_from_file(test_data_loader,criterion)
+    test_accuracy = test_score_from_file(test_data_loader,criterion)
     ex.log_scalar("test.accuracy",test_accuracy)
     results = dict()
     #I believe that it will try to minimize the rest. Let's see how it plays out
