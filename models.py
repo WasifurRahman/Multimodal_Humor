@@ -114,6 +114,14 @@ class MFN(nn.Module):
         x_a = x[:,:,self.d_l_orig:self.d_l_orig+self.d_a]
         x_v = x[:,:,self.d_l_orig+self.d_a:]
         
+        #if we do not need the entire punchline, we will zero out everything
+        if(self.config["use_punchline"]==False):
+            x_l = torch.zeros_like(x_l,requires_grad=True)
+            x_a = torch.zeros_like(x_a,requires_grad=True)
+            x_v = torch.zeros_like(x_v,requires_grad=True)
+
+
+        
         #If we do not need to use punchline text, we can zero it out
         if(self.config["use_punchline_text"]==False):
             x_l = torch.zeros_like(x_l,requires_grad=True)
@@ -128,6 +136,18 @@ class MFN(nn.Module):
         if(self.config["use_punchline_video"]==False):
             x_v = torch.zeros_like(x_v,requires_grad=True)
             #my_logger.debug("The zeroed video:",x_v)
+        #Here, we will check selective audio/visual removing
+        if(self.config["selectively_omitted_index"] !=-1):
+            feat_index = self.config["selectively_omitted_index"]
+            feat_entry = self.config["selective_audio_visual_feature_omission"][feat_index]
+            print("removing:",feat_entry["name"])
+            if(feat_entry["modality"]=="audio"):
+                x_a[:,:,feat_entry["indices"]]=0.0
+            elif(feat_entry["modality"]=="video"):
+                x_v[:,:,feat_entry["indices"]]=0.0
+
+                
+            
         
         
 
@@ -277,6 +297,16 @@ class Unimodal_Context(nn.Module):
         if(self.config["use_punchline_video"]==False):
             video_context = torch.zeros_like(video_context,requires_grad=True)
             #my_logger.debug("The zeroed video:",x_v)
+            
+        #we can remove features selectively too
+        if(self.config["selectively_omitted_index"] !=-1):
+            feat_index = self.config["selectively_omitted_index"]
+            feat_entry = self.config["selective_audio_visual_feature_omission"][feat_index]
+            #print("removing:",feat_entry["name"])
+            if(feat_entry["modality"]=="audio"):
+                audio_context[:,:,feat_entry["indices"]]=0.0
+            elif(feat_entry["modality"]=="video"):
+                video_context[:,:,feat_entry["indices"]]=0.0
             
         
         #print("Context shapes:\n","t:",text_context.shape,"a:",audio_context.shape,"v:",video_context.shape)

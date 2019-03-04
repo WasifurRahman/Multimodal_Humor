@@ -49,8 +49,12 @@ ex = Experiment('multimodal_humor')
 from sacred.observers import MongoObserver
 
 #We must change url to the the bluehive node on which the mongo server is running
-url_database = 'bhc0085:27017'
-mongo_database_name = 'real_model'
+url_database = 'bhc0105:27017'
+#mongo_database_name = 'real_data_f_score'
+mongo_database_name = 'last_ditch_effort'
+#mongo_database_name = 'prototype'
+#mongo_database_name = 'omitting_punchline'
+
 ex.observers.append(MongoObserver.create(url= url_database ,db_name= mongo_database_name))
 
 my_logger = logging.getLogger()
@@ -76,6 +80,7 @@ def cfg():
     num_workers = 2
     best_model_path =  "/scratch/echowdh2/saved_models_from_projects/multimodal_humor/"+str(node_index) +"_best_model.chkpt"
     num_context_sequence=5
+    experiment_config_index=0
     
     dataset_location = None
     dataset_name = None
@@ -85,7 +90,45 @@ def cfg():
     max_seq_len = None
     input_dims=None #organized as [t,a,v]
     
+
+    
     padding_value = 0.0
+    
+    #This variable denotes which feature we are selecting to remove from dataset
+    #It will be passed from running_different_configs.py
+    selectively_omitted_index=-1
+    omit_corrected=None
+    #Each entry of this list will contain a dict about which feature we are omitting.
+    #It will have feature name, associated modality 
+    #We will index into this dict based on the valud of the last variable
+ 
+
+    selective_audio_visual_feature_omission=[
+            {"modality":"video","name":"happiness","indices": [44, 48, 61, 65]},
+            {"modality":"video","name":"sadness","indices": [40, 42, 50, 57, 59, 67]},
+            {"modality":"video","name":"surprise","indices": [40, 41, 43, 55, 57, 58, 60, 72]},
+            {"modality":"video","name":"anger","indices": [42, 43, 45, 53, 59, 60, 62, 70]},
+            {"modality":"video","name":"disgust","indices": [46, 50, 51, 63, 67, 68]},
+            {"modality":"video","name":"fear","indices": [40, 41, 42, 43, 45, 52, 55, 57, 58, 59, 60, 62, 69, 72]},
+
+
+            {"modality":"video","name":"upper_face","indices": [40, 41, 42, 43, 44, 45, 56, 57, 58, 59, 60, 61, 62, 74]},
+            {"modality":"video","name":"lower_face","indices": [46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72]},
+            {"modality":"video","name":"shape_params","indices":  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]},
+            {"modality":"audio","name":"pitch","indices": [0]},
+            {"modality":"audio","name":"harmonic","indices": [4]},
+            {"modality":"audio","name":"quotient","indices": [3]},
+            {"modality":"audio","name":"mcep","indices":  [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]},
+            {"modality":"audio","name":"pdm","indices":  [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]},
+            {"modality":"audio","name":"pdd","indices":  [61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73]},
+            {"modality":"audio","name":"formant","indices": [75, 76, 77, 78, 79]},
+            {"modality":"audio","name":"peak_slope","indices": [8]}
+            ]
+            
+    #This variable is to keep track of the experiments in omniboard. It will be none at first.
+    #But based on the value of selectively_omitted_index, we will assign it properly through config_updates
+    omitted_feature_name=None
+            
     
     #To ensure that it captures the whole batch at the same time
     #and hence we get same score as Paul
@@ -107,6 +150,7 @@ def cfg():
     use_context_audio=True
     use_context_video = True
     
+    use_punchline=True
     use_punchline_text=True
     use_punchline_audio=True
     use_punchline_video=True
@@ -181,7 +225,6 @@ def cfg():
     
     mfn_configs = [config,NN1Config,NN2Config,gamma1Config,gamma2Config,outConfig]
    
-
 class HumorDataset(Dataset):
     
     def __init__(self,id_list,_config,):
@@ -579,15 +622,18 @@ def test_score_from_file(test_data_loader,criterion,_config,_run):
     
     mult = round(sum(np.round(predictions)==np.round(y_test))/float(len(y_test)),5)
     #print("mult_acc: ", mult)
-    
-    f_score = round(f1_score(np.round(predictions),np.round(y_test),average='weighted'),5)
+    predicted_label = (predictions >= 0)
+    f_score = round(f1_score(np.round(predicted_label),np.round(y_test),average='weighted'),5)
+    ex.log_scalar("test.f_score",f_score)
+
     #print("mult f_score: ", f_score)
     
     #TODO:Make sure that it is correct
     #true_label = (y_test >= 0)
     true_label = (y_test)
 
-    predicted_label = (predictions >= 0)
+    
+
     #print("Confusion Matrix :")
     confusion_matrix_result = confusion_matrix(true_label, predicted_label)
     #print(confusion_matrix_result)
@@ -604,12 +650,20 @@ def test_score_from_file(test_data_loader,criterion,_config,_run):
              "Classification Report":classification_report_score}
     return accuracy
 
-
+@ex.capture
+def test_omit(_config):
+    print(_config["selectively_omitted_index"],_config["omitted_feature_name"])
 
 
 @ex.automain
-def driver(_config):
+def driver(_config,_run):
     
+    if (_config["selectively_omitted_index"] != -1):
+        ex.add_config({"omitted_feature_name":_config["selective_audio_visual_feature_omission"][_config["selectively_omitted_index"]]["name"]})
+   
+
+
+        
     set_random_seed()
     #print("inside driver")
     #X_train, y_train, X_valid, y_valid, X_test, y_test = load_saved_data()

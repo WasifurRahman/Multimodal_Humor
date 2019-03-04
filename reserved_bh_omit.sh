@@ -1,14 +1,14 @@
 #!/bin/sh
 
-#SBATCH --reservation=echowdh2-20190227
+#SBATCH --reservation=echowdh2-20190220
 #SBATCH -p reserved --gres=gpu:1
 #SBATCH --mem=30gb
 #SBATCH -c 4
-#SBATCH -a 0-11
-#SBATCH -t 5-0:00:00  
-#SBATCH -J humor_res_echowdh2
-#SBATCH -o /scratch/echowdh2/output/humor_res_output%j
-#SBATCH -e /scratch/echowdh2/output/humor_res_error%j
+#SBATCH -a 10-17
+#SBATCH -t 3-0:00:00  
+#SBATCH -J humor_omit_echowdh2
+#SBATCH -o /scratch/echowdh2/output/humor_omit_output%j
+#SBATCH -e /scratch/echowdh2/output/humor_omit_error%j
 #SBATCH --mail-type=all    
 
 module load anaconda3/5.3.0b
