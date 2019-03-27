@@ -116,7 +116,7 @@ def run_configs(dataset_location):
         for relevant_config in [3]:
             appropriate_config_dict = {**dataset_specific_config[dataset_name],**experiment_configs[relevant_config],"node_index":node_index,
                                               "prototype":False,'dataset_location':dataset_location,"dataset_name":dataset_name,
-                                              "experiment_config_index":relevant_config}
+                                              "experiment_config_index":relevant_config,"epoch":60}
             r= ex.run(config_updates=appropriate_config_dict)
 
             

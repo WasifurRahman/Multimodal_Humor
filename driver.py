@@ -484,6 +484,7 @@ def train_epoch(model, training_data, criterion,optimizer, device, smoothing,_co
         epoch_loss += loss.item()
 
         # update parameters
+        #using best mfn config now
         optimizer.step_and_update_lr()
         
         num_batches +=1
@@ -678,6 +679,7 @@ def driver(_config,_run):
     #for now, we will use the same scheduler for the entire model.
     #Later, if necessary, we may use the default optimizer of MFN
     #TODO: May have to use separate scheduler for transformer and mfn
+    #We are using the optimizer and scgheduler of mfn as a last resort
     optimizer = ScheduledOptim(
         optim.Adam(
             filter(lambda x: x.requires_grad, model.parameters()),
@@ -688,15 +690,14 @@ def driver(_config,_run):
     #criterion = nn.L1Loss()
     criterion = nn.BCEWithLogitsLoss()
     criterion = criterion.to(_config["device"])
-    
     # optimizer =  optim.Adam(
-    #         filter(lambda x: x.requires_grad, transformer.parameters()),lr = _config["learning_rate"],
+    #         filter(lambda x: x.requires_grad, model.parameters()),lr = _config["config"]["lr"],
     #         betas=(0.9, 0.98), eps=1e-09)
-    #torch.optim.Adam(params, lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
-    #optimizer = ReduceLROnPlateau(optimizer,mode='min',patience=100,factor=0.5,verbose=False)
-    #scheduler = ReduceLROnPlateau(optimizer,mode='min',patience=100,factor=0.5,verbose=True)
+    # #torch.optim.Adam(params, lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+    # #optimizer = ReduceLROnPlateau(optimizer,mode='min',patience=100,factor=0.5,verbose=False)
+    # scheduler = ReduceLROnPlateau(optimizer,mode='min',patience=100,factor=0.5,verbose=True)
 
-    train(model, train_data_loader,dev_data_loader, optimizer,criterion)
+    train(model, train_data_loader,dev_data_loader, optimizer, criterion)
 
     #test_accuracy =  test_score_from_model(model,test_data_loader,criterion)
     

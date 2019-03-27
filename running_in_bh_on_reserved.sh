@@ -1,11 +1,11 @@
 #!/bin/sh
 
-#SBATCH --reservation=echowdh2-20190227
+#SBATCH --reservation=echowdh2-20190304
 #SBATCH -p reserved --gres=gpu:1
 #SBATCH --mem=30gb
 #SBATCH -c 4
-#SBATCH -a 0-11
-#SBATCH -t 5-0:00:00  
+#SBATCH -a 50-61
+#SBATCH -t 1-0:00:00  
 #SBATCH -J humor_res_echowdh2
 #SBATCH -o /scratch/echowdh2/output/humor_res_output%j
 #SBATCH -e /scratch/echowdh2/output/humor_res_error%j
