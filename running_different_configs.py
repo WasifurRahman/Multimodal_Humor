@@ -17,6 +17,7 @@ parser.add_argument('--dataset', help='the dataset you want to work on')
 dataset_specific_config = {
         #Train:10569,dev:2642,Test:3303
         "TED_humor":{'input_dims':[1,81,75,300],'max_seq_len':20,'dev_batch_size':2645,'test_batch_size':3305},
+        "TED_humor_albert":{'input_dims':[1,81,75,768],'max_seq_len':20,'dev_batch_size':2645,'test_batch_size':3305},
 
         "mosi":{'input_dims':[300,5,20],'text_indices':(0,300),'audio_indices':(300,305),'video_indices':(305,325),'max_seq_len':20,'dev_batch_size':250,'test_batch_size':700},
         "iemocap":{'text_indices':(0,300),'audio_indices':(300,374),'video_indices':(374,409),'max_seq_len':21},
@@ -39,10 +40,10 @@ experiment_configs=[
         {'use_context':True,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':False,'use_context_text':True,'use_context_audio':False,'use_context_video':False},#ind 1:context,T
         {'use_context':True,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':False,'use_context_text':True,'use_context_audio':True,'use_context_video':False},#ind 2:Context,T+A
         {'use_context':True,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':True,'use_context_text':True,'use_context_audio':False,'use_context_video':True},#ind 3:context, T+V
-        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':True},
-        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':False},
-        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':False},
-        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':True},
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':True},#ind 4:No context,T+A+V
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':False},#ind 5: NO context, T
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':True,'use_punchline_video':False},#ind 6: No context, T+A
+        {'use_context':False,'use_punchline_text':True,'use_punchline_audio':False,'use_punchline_video':True},#ind 7: No context, T+V
         {'use_context':True,'use_punchline_text':False,'use_punchline_audio':True,'use_punchline_video':True,'use_context_text':False,'use_context_audio':True,'use_context_video':True},#ind:8,context,A+V
         {'use_context':False,'use_punchline_text':False,'use_punchline_audio':True,'use_punchline_video':True},#ind:9,No Context,A+V
         
@@ -57,17 +58,23 @@ num_experiments = len(experiment_configs)
 #sacred will generate a different random _seed for every experiment
 #and we will use that seed to control the randomness emanating from our libraries
 
-#node_index=30
-node_index=int(os.environ['SLURM_ARRAY_TASK_ID'])
+node_index=30
+#node_index=int(os.environ['SLURM_ARRAY_TASK_ID'])
 
 #So, we are assuming that there will a folder called /processed_multimodal_data in the parent folder
 #of this code. I wanted to keep it inside the .git folder. But git push limits file size to be <=100MB
 #and some data files exceeds that size.
-all_datasets_location = "../processed_multimodal_data"
+#all_datasets_location = "../processed_multimodal_data"
+
+#due to limited space, we will directly  use the  data  in mhoque lab
+all_datasets_location = "/scratch/mhoque_lab/datasets/processed_multimodal_data/humor/CMFN"
+
 
 two_context_t_a_v=1
 selective_omission=2
 discarding_punchline=3
+
+
 emphaisis_on_a_subset=4
 cur_experiment= emphaisis_on_a_subset
 
@@ -113,10 +120,10 @@ def run_configs(dataset_location):
                                               "experiment_config_index":relevant_config}
             r= ex.run(config_updates=appropriate_config_dict)
     elif cur_experiment==emphaisis_on_a_subset:
-        for relevant_config in [3]:
+        for relevant_config in [0]:
             appropriate_config_dict = {**dataset_specific_config[dataset_name],**experiment_configs[relevant_config],"node_index":node_index,
-                                              "prototype":False,'dataset_location':dataset_location,"dataset_name":dataset_name,
-                                              "experiment_config_index":relevant_config,"epoch":60}
+                                              "prototype":True,'dataset_location':dataset_location,"dataset_name":dataset_name,
+                                              "experiment_config_index":relevant_config,"epoch":30}
             r= ex.run(config_updates=appropriate_config_dict)
 
             

@@ -49,11 +49,14 @@ ex = Experiment('multimodal_humor')
 from sacred.observers import MongoObserver
 
 #We must change url to the the bluehive node on which the mongo server is running
-url_database = 'bhc0105:27017'
+url_database = 'bhc0086:27017'
 #mongo_database_name = 'real_data_f_score'
-mongo_database_name = 'last_ditch_effort'
+#mongo_database_name = 'last_ditch_effort'
+#mongo_database_name = 'statistical_test'#in new database reviewer_multi_humor
 #mongo_database_name = 'prototype'
 #mongo_database_name = 'omitting_punchline'
+mongo_database_name = 'albert_embedding'
+
 
 ex.observers.append(MongoObserver.create(url= url_database ,db_name= mongo_database_name))
 
@@ -662,8 +665,11 @@ def driver(_config,_run):
     if (_config["selectively_omitted_index"] != -1):
         ex.add_config({"omitted_feature_name":_config["selective_audio_visual_feature_omission"][_config["selectively_omitted_index"]]["name"]})
    
-
-
+    output = open('config_file.pkl', 'wb')
+    pickle.dump(_config, output)
+    ex.add_artifact('config_file.pkl')
+    output.close()
+    
         
     set_random_seed()
     #print("inside driver")
@@ -706,6 +712,10 @@ def driver(_config,_run):
     results = dict()
     #I believe that it will try to minimize the rest. Let's see how it plays out
     results["optimization_target"] = 1 - test_accuracy
-
+    
+    stat_file = open("all_accuracies_for_stat.txt","a") 
+ 
+    stat_file.write(str(_config["experiment_config_index"]) + "," + str(test_accuracy) + "\n") 
+    stat_file.close()
     return results
 

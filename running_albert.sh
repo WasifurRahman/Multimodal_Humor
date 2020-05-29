@@ -1,0 +1,1 @@
+python running_different_configs.py --dataset=TED_humor_albert
